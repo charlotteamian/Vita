@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose 接管 UI,这里只需要一个透明 splash 主题避免启动闪白 -->
+    <style name="Theme.Vita" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#06080f</item>
+        <item name="android:navigationBarColor">#06080f</item>
+        <item name="android:windowBackground">@color/vita_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

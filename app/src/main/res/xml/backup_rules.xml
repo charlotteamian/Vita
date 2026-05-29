@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- 数据库由用户自行导出,不走系统自动备份 -->
+    <exclude domain="database" />
+    <exclude domain="sharedpref" path="health_sync_prefs.xml" />
+</full-backup-content>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 简洁 "V" 字母 logo,后续可让 charlotte 替换 -->
+    <path
+        android:fillColor="#7CC4FF"
+        android:pathData="M36,32 L54,76 L72,32 L66,32 L54,62 L42,32 Z" />
+</vector>

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vita</string>
+
+    <!-- 底部导航 -->
+    <string name="nav_today">今日</string>
+    <string name="nav_stats">统计</string>
+    <string name="nav_life">生活</string>
+    <string name="nav_settings">设置</string>
+
+    <!-- 通用 -->
+    <string name="sync_now">立即同步</string>
+    <string name="syncing">同步中…</string>
+    <string name="last_sync">上次同步: %1$s</string>
+    <string name="never_synced">尚未同步</string>
+
+    <!-- Today -->
+    <string name="today_steps">步数</string>
+    <string name="today_heart_rate">心率</string>
+    <string name="today_sleep">睡眠</string>
+    <string name="today_calories">卡路里</string>
+    <string name="today_distance">距离</string>
+    <string name="today_active_minutes">活跃分钟</string>
+
+    <!-- Stats -->
+    <string name="stats_range_day">日</string>
+    <string name="stats_range_week">周</string>
+    <string name="stats_range_month">月</string>
+    <string name="stats_range_year">年</string>
+    <string name="stats_range_all">全部</string>
+    <string name="stats_steps_title">步数</string>
+    <string name="stats_sleep_title">睡眠时长</string>
+    <string name="stats_heart_rate_title">心率</string>
+
+    <!-- Life (Cycle & Sleep) -->
+    <string name="cycle_log_period">记录月经</string>
+    <string name="cycle_next_predicted">下次预计: %1$s</string>
+    <string name="cycle_avg_length">平均周期: %1$d 天</string>
+    <string name="cycle_phase_menstrual">月经期</string>
+    <string name="cycle_phase_follicular">卵泡期</string>
+    <string name="cycle_phase_ovulation">排卵期</string>
+    <string name="cycle_phase_luteal">黄体期</string>
+
+    <!-- Settings -->
+    <string name="settings_health_connect">Health Connect</string>
+    <string name="settings_grant_permissions">授权数据读取</string>
+    <string name="settings_install_hc">安装 Health Connect</string>
+    <string name="settings_backup_export">导出全部数据 (JSON)</string>
+    <string name="settings_backup_import">从备份导入</string>
+    <string name="settings_about">关于 Vita</string>
+
+    <!-- 权限页 -->
+    <string name="permission_rationale_title">为什么需要这些权限</string>
+    <string name="permission_rationale_body">Vita 仅在本机读取你的健康数据用于展示和统计,不上传任何信息到云端。所有数据保存在你的设备上,可随时通过\"导出\"功能备份。</string>
+</resources>
