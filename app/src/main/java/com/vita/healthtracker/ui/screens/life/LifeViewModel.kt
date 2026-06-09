@@ -17,6 +17,9 @@ import com.vita.healthtracker.data.repository.HealthRepository
 import com.vita.healthtracker.data.repository.MoodRepository
 import com.vita.healthtracker.data.repository.WeatherRepository
 import com.vita.healthtracker.domain.BayesianCycleModel
+import com.vita.healthtracker.domain.CycleLogLogic
+import com.vita.healthtracker.domain.CyclePeriod
+import com.vita.healthtracker.domain.CycleRecordType
 import com.vita.healthtracker.domain.CyclePrediction
 import com.vita.healthtracker.domain.DayStatus
 import com.vita.healthtracker.domain.FitnessBadgeEvaluator
@@ -26,6 +29,7 @@ import com.vita.healthtracker.domain.PredictionConfidence
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -34,18 +38,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/** 连续日期归并后的经期段落 */
-data class CyclePeriod(
-    val startDate: LocalDate,
-    val endDate: LocalDate,
-    val days: Int,
-    val avgFlow: Int,
-    val entries: List<CycleEntry>,
-)
-
 data class LifeUiState(
     val entries: List<CycleEntry> = emptyList(),
     val cyclePeriods: List<CyclePeriod> = emptyList(),
+    val spottingEntries: List<CycleEntry> = emptyList(),
+    val symptomOptions: List<String> = emptyList(),
     val recentSleeps: List<SleepSession> = emptyList(),
     val moods: Map<String, MoodEntry> = emptyMap(),
     val weather: Map<String, WeatherEntry> = emptyMap(),
@@ -66,6 +63,7 @@ data class LifeUiState(
     // ── 贝叶斯预测 ──
     val prediction: CyclePrediction? = null,
     val todayStatus: DayStatus = DayStatus.UNKNOWN,
+    val todayPeriodDay: Int? = null,
 )
 
 class LifeViewModel(
@@ -79,6 +77,7 @@ class LifeViewModel(
 
     private val _prediction = MutableStateFlow<CyclePrediction?>(null)
     private val _todayStatus = MutableStateFlow(DayStatus.UNKNOWN)
+    private val _todayPeriodDay = MutableStateFlow<Int?>(null)
 
     val state: StateFlow<LifeUiState> = run {
         val now = Instant.now()
@@ -90,21 +89,29 @@ class LifeViewModel(
             moodRepo.observeRange(today.minusDays(370), today),
             weatherRepo.observeRange(today.minusDays(370), today),
         ) { moods, weather -> JournalData(moods, weather) }
+        val cycleToday = combine(
+            _todayStatus,
+            _todayPeriodDay,
+        ) { status, periodDay -> CycleTodayData(status, periodDay) }
         val base = combine(
             cycleRepo.observeAll(),
             _prediction,
-            _todayStatus,
+            cycleToday,
             healthRepo.sleepRange(sleepFrom, now),
             journal,
-        ) { entries, prediction, todayStatus, sleeps, journalData ->
+        ) { entries, prediction, cycleTodayData, sleeps, journalData ->
+            val periods = CycleLogLogic.groupIntoPeriods(entries)
             LifeUiState(
                 entries = entries,
-                cyclePeriods = groupIntoPeriods(entries),
+                cyclePeriods = periods,
+                spottingEntries = CycleLogLogic.spottingEntries(entries),
+                symptomOptions = CycleLogLogic.symptomOptions(entries),
                 recentSleeps = sleeps.sortedByDescending { it.startEpochMs },
                 moods = journalData.moods.associateBy { it.date },
                 weather = journalData.weather.associateBy { it.date },
                 prediction = prediction,
-                todayStatus = todayStatus,
+                todayStatus = cycleTodayData.status,
+                todayPeriodDay = cycleTodayData.periodDay,
             )
         }
         combine(
@@ -171,12 +178,27 @@ class LifeViewModel(
     }
 
     /** 把日期范围内每天都记录；只有用户勾选时才把第一天标记为周期起始日。 */
-    fun logCycleRange(startDate: LocalDate, endDate: LocalDate, flow: Int, isStart: Boolean) {
+    fun logCycleRange(
+        startDate: LocalDate,
+        endDate: LocalDate,
+        flow: Int,
+        isStart: Boolean,
+        recordType: CycleRecordType = CycleRecordType.PERIOD,
+        symptoms: Set<String> = emptySet(),
+    ) {
         viewModelScope.launch {
             var current = startDate
             while (!current.isAfter(endDate)) {
-                val mark = isStart && current == startDate
-                cycleRepo.upsert(CycleEntry(date = current.toString(), flow = flow, isPeriodStart = mark))
+                val mark = recordType == CycleRecordType.PERIOD && isStart && current == startDate
+                cycleRepo.upsert(
+                    CycleLogLogic.buildEntry(
+                        date = current,
+                        recordType = recordType,
+                        flow = flow,
+                        isStart = mark,
+                        symptoms = symptoms,
+                    )
+                )
                 current = current.plusDays(1)
             }
             refreshPrediction()
@@ -275,12 +297,18 @@ class LifeViewModel(
         val weather: List<WeatherEntry>,
     )
 
+    private data class CycleTodayData(
+        val status: DayStatus,
+        val periodDay: Int?,
+    )
+
     private fun refreshPredictionFromEntries(allEntries: List<CycleEntry>) {
-        val periods = groupIntoPeriods(allEntries)
+        val periods = CycleLogLogic.groupIntoPeriods(allEntries)
 
         if (periods.isEmpty()) {
             _prediction.value = null
             _todayStatus.value = DayStatus.UNKNOWN
+            _todayPeriodDay.value = null
             return
         }
 
@@ -306,57 +334,19 @@ class LifeViewModel(
         val prediction = BayesianCycleModel.predict(starts, durations)
         _prediction.value = prediction
 
+        val today = LocalDate.now()
         val lastPeriod = periods.maxByOrNull { it.startDate }
+        val currentPeriod = periods.firstOrNull { period ->
+            !today.isBefore(period.startDate) && !today.isAfter(period.endDate)
+        }
+        _todayPeriodDay.value = currentPeriod?.let {
+            ChronoUnit.DAYS.between(it.startDate, today).toInt() + 1
+        }
         _todayStatus.value = BayesianCycleModel.getDayStatus(
-            date = LocalDate.now(),
+            date = today,
             prediction = prediction,
             lastPeriodStart = lastPeriod?.startDate,
             periodDays = lastPeriod?.days ?: 5,
-        )
-    }
-
-    // ──── 归并逻辑 ──────────────────────────────────────────
-
-    /** 将逐日的 CycleEntry 列表合并为连续的段落 */
-    private fun groupIntoPeriods(entries: List<CycleEntry>): List<CyclePeriod> {
-        if (entries.isEmpty()) return emptyList()
-        val sorted = entries
-            .asSequence()
-            .filter { e -> e.flow > 0 && e.notes != "经间出血" }
-            .mapNotNull { e -> runCatching { LocalDate.parse(e.date) to e }.getOrNull() }
-            .sortedBy { it.first }
-            .toList()
-
-        if (sorted.isEmpty()) return emptyList()
-
-        val periods = mutableListOf<CyclePeriod>()
-        var groupStart = sorted.first().first
-        var groupEntries = mutableListOf(sorted.first().second)
-
-        for (i in 1 until sorted.size) {
-            val (date, entry) = sorted[i]
-            val prevDate = sorted[i - 1].first
-            // 如果日期连续（间隔 1 天），归入同一段
-            if (date.toEpochDay() - prevDate.toEpochDay() <= 1) {
-                groupEntries.add(entry)
-            } else {
-                periods.add(buildPeriod(groupStart, groupEntries))
-                groupStart = date
-                groupEntries = mutableListOf(entry)
-            }
-        }
-        periods.add(buildPeriod(groupStart, groupEntries))
-        return periods.sortedByDescending { it.startDate }
-    }
-
-    private fun buildPeriod(startDate: LocalDate, entries: List<CycleEntry>): CyclePeriod {
-        val endDate = runCatching { LocalDate.parse(entries.last().date) }.getOrDefault(startDate)
-        return CyclePeriod(
-            startDate = startDate,
-            endDate = endDate,
-            days = entries.size,
-            avgFlow = if (entries.isNotEmpty()) entries.map { it.flow }.average().toInt() else 0,
-            entries = entries,
         )
     }
 }

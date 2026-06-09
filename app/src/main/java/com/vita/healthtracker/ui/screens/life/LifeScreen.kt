@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -68,6 +70,10 @@ import com.vita.healthtracker.data.local.entity.HabitCheckIn
 import com.vita.healthtracker.data.local.entity.HabitDefinition
 import com.vita.healthtracker.data.local.entity.MoodEntry
 import com.vita.healthtracker.data.local.entity.SleepSession
+import com.vita.healthtracker.domain.CycleLogLogic
+import com.vita.healthtracker.domain.CyclePeriod
+import com.vita.healthtracker.domain.CyclePredictionDisplay
+import com.vita.healthtracker.domain.CycleRecordType
 import com.vita.healthtracker.domain.DayStatus
 import com.vita.healthtracker.domain.MoodCatalog
 import com.vita.healthtracker.domain.HabitBadge
@@ -94,6 +100,9 @@ fun LifeScreen(navController: NavController) {
     val state by vm.state.collectAsStateWithLifecycle()
     var flow by rememberSaveable { mutableIntStateOf(2) }
     var markStart by rememberSaveable { mutableStateOf(false) }
+    var cycleRecordType by rememberSaveable { mutableStateOf(CycleRecordType.PERIOD) }
+    var selectedCycleSymptoms by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var customCycleSymptom by rememberSaveable { mutableStateOf("") }
     var showDatePicker by rememberSaveable { mutableStateOf(false) }
     var showHabitDialog by rememberSaveable { mutableStateOf(false) }
     var newHabitName by rememberSaveable { mutableStateOf("") }
@@ -224,13 +233,43 @@ fun LifeScreen(navController: NavController) {
                 onExpandedChange = { cycleExpanded = it },
                 flow = flow,
                 onFlowChange = { flow = it },
+                recordType = cycleRecordType,
+                onRecordTypeChange = { cycleRecordType = it },
                 markStart = markStart,
                 onMarkStartChange = { markStart = it },
+                selectedSymptoms = selectedCycleSymptoms,
+                symptomOptions = state.symptomOptions,
+                customSymptom = customCycleSymptom,
+                onCustomSymptomChange = { customCycleSymptom = it },
+                onToggleSymptom = { symptom ->
+                    selectedCycleSymptoms = if (symptom in selectedCycleSymptoms) {
+                        selectedCycleSymptoms - symptom
+                    } else {
+                        selectedCycleSymptoms + symptom
+                    }
+                },
+                onAddCustomSymptom = {
+                    val symptom = customCycleSymptom.trim()
+                    if (symptom.isNotBlank() && symptom !in selectedCycleSymptoms) {
+                        selectedCycleSymptoms = selectedCycleSymptoms + symptom
+                    }
+                    customCycleSymptom = ""
+                },
                 expandedPeriods = expandedPeriods,
                 onExpandedPeriodsChange = { expandedPeriods = it },
                 onOpenDatePicker = { showDatePicker = true },
-                onLogToday = { vm.logCycleRange(startDate = LocalDate.now(), endDate = LocalDate.now(), flow = flow, isStart = markStart) },
+                onLogToday = {
+                    vm.logCycleRange(
+                        startDate = LocalDate.now(),
+                        endDate = LocalDate.now(),
+                        flow = flow,
+                        isStart = markStart,
+                        recordType = cycleRecordType,
+                        symptoms = selectedCycleSymptoms.toSet(),
+                    )
+                },
                 onDeletePeriod = { period -> vm.deleteCyclePeriod(period) },
+                onDeleteCycle = { date -> vm.deleteCycle(date) },
             )
         }
     }
@@ -298,7 +337,14 @@ fun LifeScreen(navController: NavController) {
                     if (startMillis != null && endMillis != null) {
                         val startDate = Instant.ofEpochMilli(startMillis).atZone(ZoneId.of("UTC")).toLocalDate()
                         val endDate = Instant.ofEpochMilli(endMillis).atZone(ZoneId.of("UTC")).toLocalDate()
-                        vm.logCycleRange(startDate, endDate, flow, markStart)
+                        vm.logCycleRange(
+                            startDate = startDate,
+                            endDate = endDate,
+                            flow = flow,
+                            isStart = markStart,
+                            recordType = cycleRecordType,
+                            symptoms = selectedCycleSymptoms.toSet(),
+                        )
                     }
                 }) { Text("确定") }
             },
@@ -308,7 +354,7 @@ fun LifeScreen(navController: NavController) {
         ) {
             androidx.compose.material3.DateRangePicker(
                 state = datePickerState,
-                title = { Text(text = "选择经期范围", modifier = Modifier.padding(16.dp)) },
+                title = { Text(text = "选择记录范围", modifier = Modifier.padding(16.dp)) },
                 headline = { Text(text = "请选择起止日期", modifier = Modifier.padding(horizontal = 16.dp)) },
                 modifier = Modifier.weight(1f)
             )
@@ -451,6 +497,7 @@ private fun sleepTextShort(minutes: Long): String = "${minutes / 60}h${minutes %
 
 private fun sleepTextLong(minutes: Long): String = "${minutes / 60} 小时 ${minutes % 60} 分钟"
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CycleSection(
     state: LifeUiState,
@@ -458,13 +505,22 @@ private fun CycleSection(
     onExpandedChange: (Boolean) -> Unit,
     flow: Int,
     onFlowChange: (Int) -> Unit,
+    recordType: CycleRecordType,
+    onRecordTypeChange: (CycleRecordType) -> Unit,
     markStart: Boolean,
     onMarkStartChange: (Boolean) -> Unit,
+    selectedSymptoms: List<String>,
+    symptomOptions: List<String>,
+    customSymptom: String,
+    onCustomSymptomChange: (String) -> Unit,
+    onToggleSymptom: (String) -> Unit,
+    onAddCustomSymptom: () -> Unit,
     expandedPeriods: Boolean,
     onExpandedPeriodsChange: (Boolean) -> Unit,
     onOpenDatePicker: () -> Unit,
     onLogToday: () -> Unit,
     onDeletePeriod: (CyclePeriod) -> Unit,
+    onDeleteCycle: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
@@ -509,27 +565,92 @@ private fun CycleSection(
                         modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        listOf(1 to "点滴", 2 to "轻", 3 to "中", 4 to "重").forEach { (level, label) ->
+                        FilterChip(
+                            selected = recordType == CycleRecordType.PERIOD,
+                            onClick = { onRecordTypeChange(CycleRecordType.PERIOD) },
+                            label = { Text("月经") },
+                        )
+                        FilterChip(
+                            selected = recordType == CycleRecordType.SPOTTING,
+                            onClick = { onRecordTypeChange(CycleRecordType.SPOTTING) },
+                            label = { Text("点滴出血") },
+                        )
+                    }
+                    if (recordType == CycleRecordType.PERIOD) {
+                        Row(
+                            modifier = Modifier.padding(top = 8.dp).fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            listOf(1 to "点滴", 2 to "轻", 3 to "中", 4 to "重").forEach { (level, label) ->
+                                FilterChip(
+                                    selected = flow == level,
+                                    onClick = { onFlowChange(level) },
+                                    label = { Text(label) },
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = "症状",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        (symptomOptions + selectedSymptoms).distinct().forEach { symptom ->
                             FilterChip(
-                                selected = flow == level,
-                                onClick = { onFlowChange(level) },
-                                label = { Text(label) },
+                                selected = symptom in selectedSymptoms,
+                                onClick = { onToggleSymptom(symptom) },
+                                label = { Text(symptom) },
                             )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.padding(top = 8.dp).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = customSymptom,
+                            onValueChange = onCustomSymptomChange,
+                            label = { Text("新增症状") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = onAddCustomSymptom,
+                            enabled = customSymptom.isNotBlank(),
+                        ) {
+                            Text("添加")
                         }
                     }
                     Row(
                         modifier = Modifier.padding(top = 8.dp).fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        FilterChip(
-                            selected = markStart,
-                            onClick = { onMarkStartChange(!markStart) },
-                            label = { Text("标记为周期起始日") },
-                        )
+                        if (recordType == CycleRecordType.PERIOD) {
+                            FilterChip(
+                                selected = markStart,
+                                onClick = { onMarkStartChange(!markStart) },
+                                label = { Text("标记为周期起始日") },
+                            )
+                        }
                         Spacer(modifier = Modifier.weight(1f))
                         AssistChip(
                             onClick = onLogToday,
-                            label = { Text(stringResource(R.string.cycle_log_period)) },
+                            label = {
+                                Text(
+                                    if (recordType == CycleRecordType.SPOTTING) {
+                                        "记录点滴"
+                                    } else {
+                                        stringResource(R.string.cycle_log_period)
+                                    }
+                                )
+                            },
                             leadingIcon = { Icon(Icons.Outlined.Favorite, contentDescription = null, tint = VitaSecondary) },
                             colors = AssistChipDefaults.assistChipColors(),
                         )
@@ -569,6 +690,17 @@ private fun CycleSection(
                         periods.forEach { period ->
                             CyclePeriodRow(period = period, onDelete = { onDeletePeriod(period) })
                         }
+                }
+            }
+            if (state.spottingEntries.isNotEmpty()) {
+                Text(
+                    "近期点滴出血",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                state.spottingEntries.take(5).forEach { entry ->
+                    CycleSpottingRow(entry = entry, onDelete = { onDeleteCycle(entry.date) })
                 }
             }
         }
@@ -1033,6 +1165,9 @@ private fun CyclePeriodRow(period: CyclePeriod, onDelete: () -> Unit) {
     } else {
         "${period.startDate.format(fmt)} — ${period.endDate.format(fmt)}"
     }
+    val symptoms = period.entries
+        .flatMap { CycleLogLogic.decodeSymptoms(it.symptomsCsv) }
+        .distinct()
 
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
@@ -1080,6 +1215,78 @@ private fun CyclePeriodRow(period: CyclePeriod, onDelete: () -> Unit) {
                         text = "  ${flowLabel(period.avgFlow)}",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (symptoms.isNotEmpty()) {
+                    Text(
+                        text = symptoms.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = VitaOnSurfaceMuted,
+                        modifier = Modifier.padding(top = 4.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Outlined.Delete, contentDescription = "删除")
+            }
+        }
+    }
+}
+
+@Composable
+private fun CycleSpottingRow(entry: CycleEntry, onDelete: () -> Unit) {
+    val fmt = DateTimeFormatter.ofPattern("M月d日")
+    val dateText = runCatching { LocalDate.parse(entry.date).format(fmt) }.getOrElse { entry.date }
+    val symptoms = CycleLogLogic.decodeSymptoms(entry.symptomsCsv)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(VitaGradients.cardSurface, MaterialTheme.shapes.small)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(dateText, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyLarge)
+                Row(
+                    modifier = Modifier.padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(VitaSecondary),
+                    )
+                    repeat(3) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(VitaSecondary.copy(alpha = 0.15f)),
+                        )
+                    }
+                    Text(
+                        text = "  点滴出血",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (symptoms.isNotEmpty()) {
+                    Text(
+                        text = symptoms.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = VitaOnSurfaceMuted,
+                        modifier = Modifier.padding(top = 4.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -1144,7 +1351,11 @@ private fun BayesianPredictionCard(state: LifeUiState, modifier: Modifier = Modi
                 if (prediction != null) {
                     Spacer(modifier = Modifier.weight(1f))
                     Text(
-                        text = "第 ${prediction.cycleDay} 天",
+                        text = if (todayStatus == DayStatus.MENSTRUAL && state.todayPeriodDay != null) {
+                            "经期第 ${state.todayPeriodDay} 天"
+                        } else {
+                            "第 ${prediction.cycleDay} 天"
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1152,16 +1363,11 @@ private fun BayesianPredictionCard(state: LifeUiState, modifier: Modifier = Modi
             }
 
             if (prediction != null) {
-                val countdownValue = when {
-                    prediction.daysUntilNextPeriod < 0 -> (-prediction.daysUntilNextPeriod).toString()
-                    prediction.daysUntilNextPeriod == 0L -> "今"
-                    else -> prediction.daysUntilNextPeriod.toString()
-                }
-                val countdownUnit = when {
-                    prediction.daysUntilNextPeriod < 0 -> "天已推迟"
-                    prediction.daysUntilNextPeriod == 0L -> "天"
-                    else -> "天后"
-                }
+                val countdown = CyclePredictionDisplay.countdown(
+                    prediction = prediction,
+                    todayStatus = todayStatus,
+                    todayPeriodDay = state.todayPeriodDay,
+                )
                 // 倒计时
                 Row(
                     verticalAlignment = Alignment.Bottom,
@@ -1169,7 +1375,7 @@ private fun BayesianPredictionCard(state: LifeUiState, modifier: Modifier = Modi
                     modifier = Modifier.padding(top = 16.dp),
                 ) {
                     Text(
-                        text = countdownValue,
+                        text = countdown.value,
                         style = MaterialTheme.typography.displayLarge.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 48.sp,
@@ -1177,7 +1383,7 @@ private fun BayesianPredictionCard(state: LifeUiState, modifier: Modifier = Modi
                         color = VitaSecondary,
                     )
                     Text(
-                        text = countdownUnit,
+                        text = countdown.unit,
                         style = MaterialTheme.typography.titleLarge,
                         color = VitaSecondary.copy(alpha = 0.8f),
                         modifier = Modifier.padding(bottom = 8.dp),

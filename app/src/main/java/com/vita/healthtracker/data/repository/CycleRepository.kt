@@ -5,6 +5,7 @@ import androidx.health.connect.client.records.metadata.Metadata
 import com.vita.healthtracker.data.healthconnect.HealthConnectManager
 import com.vita.healthtracker.data.local.dao.CycleDao
 import com.vita.healthtracker.data.local.entity.CycleEntry
+import com.vita.healthtracker.domain.CycleLogLogic
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -28,7 +29,11 @@ class CycleRepository(
     suspend fun upsert(entry: CycleEntry) {
         dao.upsert(entry)
         // 同步写回 Health Connect (除了已经从 HC 拉来的)
-        if (entry.source == "manual" && entry.flow > 0) {
+        if (
+            entry.source == "manual" &&
+            entry.flow > 0 &&
+            !CycleLogLogic.isIntermenstrualBleeding(entry)
+        ) {
             val day = LocalDate.parse(entry.date)
             val zone = ZoneId.systemDefault()
             val start = day.atStartOfDay(zone).toInstant()
