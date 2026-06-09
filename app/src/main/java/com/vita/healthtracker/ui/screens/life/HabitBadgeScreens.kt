@@ -264,6 +264,8 @@ fun HabitDetailScreen(onBack: () -> Unit) {
     var showManageDialog by rememberSaveable { mutableStateOf(false) }
     var newHabitName by rememberSaveable { mutableStateOf("") }
     var pendingDeleteHabit by remember { mutableStateOf<HabitDefinition?>(null) }
+    var pendingRenameHabit by remember { mutableStateOf<HabitDefinition?>(null) }
+    var renamedHabitName by rememberSaveable { mutableStateOf("") }
     val today = LocalDate.now()
     val selectedDate = remember(selectedDateText) {
         runCatching { LocalDate.parse(selectedDateText) }.getOrDefault(today)
@@ -407,6 +409,46 @@ fun HabitDetailScreen(onBack: () -> Unit) {
                 showManageDialog = false
                 pendingDeleteHabit = habit
             },
+            onRequestRename = { habit ->
+                showManageDialog = false
+                pendingRenameHabit = habit
+                renamedHabitName = habit.name
+            },
+        )
+    }
+
+    pendingRenameHabit?.let { habit ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingRenameHabit = null
+                renamedHabitName = ""
+            },
+            title = { Text("修改习惯名称") },
+            text = {
+                OutlinedTextField(
+                    value = renamedHabitName,
+                    onValueChange = { renamedHabitName = it },
+                    label = { Text("习惯名称") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.renameHabit(habit.id, renamedHabitName)
+                        pendingRenameHabit = null
+                        renamedHabitName = ""
+                    },
+                    enabled = renamedHabitName.isNotBlank(),
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingRenameHabit = null
+                    renamedHabitName = ""
+                }) { Text("取消") }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
         )
     }
 
@@ -524,6 +566,11 @@ fun HabitBadgeDetailScreen(onBack: () -> Unit) {
             earned = badge.id in state.earnedBadgeIds || badge.id in state.fitnessEarnedIds,
             fitnessProgress = state.fitnessProgress[badge.id],
             longestStreakDays = state.habitLongestStreakDays,
+            unlockDateText = state.badgeUnlockDates[badge.id]?.let { iso ->
+                runCatching {
+                    LocalDate.parse(iso).format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
+                }.getOrDefault(iso)
+            },
             onDismiss = { detailBadge = null },
         )
     }
@@ -697,6 +744,7 @@ private fun BadgeDetailDialog(
     earned: Boolean,
     fitnessProgress: FitnessProgress?,
     longestStreakDays: Int,
+    unlockDateText: String?,
     onDismiss: () -> Unit,
 ) {
     val isHabitBadge = badge.systemId == HabitBadgeCatalog.systemId
@@ -709,45 +757,31 @@ private fun BadgeDetailDialog(
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { HabitBadgeImage(badge, earned = earned, iconSize = 110.dp) },
-        title = {
-            Text(
-                badge.name,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        },
         text = {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(
-                    "${badge.systemName} · $conditionText",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = VitaActive,
-                    textAlign = TextAlign.Center,
+                HabitBadge3DCard(
+                    badge = badge,
+                    earned = earned,
+                    conditionText = conditionText,
+                    unlockDateText = if (earned) unlockDateText else null,
                 )
-                Text(
-                    badge.description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-                LinearProgressIndicator(
-                    progress = { ratio },
-                    color = VitaActive,
-                    trackColor = VitaActive.copy(alpha = 0.12f),
-                    modifier = Modifier.fillMaxWidth().height(5.dp),
-                )
-                Text(
-                    if (earned) "已点亮" else "未获得",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (earned) VitaActive else VitaOnSurfaceMuted,
-                )
+                if (!earned) {
+                    LinearProgressIndicator(
+                        progress = { ratio },
+                        color = VitaActive,
+                        trackColor = VitaActive.copy(alpha = 0.12f),
+                        modifier = Modifier.fillMaxWidth().height(5.dp),
+                    )
+                    Text(
+                        "未获得 · 已达成 ${(ratio * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = VitaOnSurfaceMuted,
+                    )
+                }
             }
         },
         confirmButton = {
@@ -766,32 +800,23 @@ fun HabitBadgeCelebrationDialog(badge: HabitBadge, onDismiss: () -> Unit) {
     } else {
         badge.tag
     }
+    val todayText = remember { LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy年M月d日")) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { HabitBadgeImage(badge, earned = true, iconSize = 118.dp) },
-        title = { Text("获得徽章") },
+        title = {
+            Text(
+                "获得徽章",
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
         text = {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    badge.name,
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    conditionText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = VitaActive,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-                Text(
-                    badge.description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 10.dp),
-                    textAlign = TextAlign.Center,
-                )
-            }
+            HabitBadge3DCard(
+                badge = badge,
+                earned = true,
+                conditionText = conditionText,
+                unlockDateText = todayText,
+            )
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
@@ -1164,6 +1189,7 @@ private fun HabitManageDialog(
     habits: List<HabitDefinition>,
     onDismiss: () -> Unit,
     onRequestDelete: (HabitDefinition) -> Unit,
+    onRequestRename: (HabitDefinition) -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1194,6 +1220,9 @@ private fun HabitManageDialog(
                                 color = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.weight(1f),
                             )
+                            TextButton(onClick = { onRequestRename(habit) }) {
+                                Text("改名")
+                            }
                             TextButton(onClick = { onRequestDelete(habit) }) {
                                 Text("删除")
                             }

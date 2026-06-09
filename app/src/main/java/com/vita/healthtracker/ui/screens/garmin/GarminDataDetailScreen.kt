@@ -172,10 +172,10 @@ private fun FullDataHeader(
             )
             Text(
                 text = if (structuredCount == 0 && garminReadableCount == 0) {
-                    if (garminRecords.isEmpty()) "这天还没有落库数据" else "这天有 ${garminRecords.size} 类 Garmin 接口数据已保存, 暂无可读指标"
+                    if (garminRecords.isEmpty()) "这天还没有同步到数据" else "这天已保存 ${garminRecords.size} 类 Garmin 数据，暂时没有可展示的指标"
                 } else {
                     buildString {
-                        append("${structuredCount + garminReadableCount} 类可读数据")
+                        append("${structuredCount + garminReadableCount} 类可查看数据")
                         if (garminRecords.isNotEmpty()) {
                             append(" · Garmin ")
                             append(garminRecords.map { domainLabel(it.domain) }.distinct().joinToString(" / "))
@@ -195,7 +195,7 @@ private fun FullDataEmptyCard() {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Icon(Icons.Outlined.Dataset, contentDescription = null, tint = VitaPrimary)
             Text(
-                text = "同步或导入后, 这里会按日展示 Garmin / Apple 健康 / Health Connect / 手机传感器等渠道落到本机的数据。",
+                text = "同步或导入后，这里会按日期整理 Garmin、Apple 健康、Health Connect 和手机传感器里的记录。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -280,7 +280,7 @@ private fun GarminRawPayloadCard(record: GarminRawRecord, block: GarminDisplayBl
             }
             if (block.hiddenCount > 0) {
                 Text(
-                    text = "还有 ${block.hiddenCount} 项已保存在本机, 这里先不展开。",
+                    text = "还有 ${block.hiddenCount} 项记录已保存，当前页面先不展开。",
                     style = MaterialTheme.typography.bodySmall,
                     color = VitaOnSurfaceMuted,
                 )
@@ -455,16 +455,6 @@ private fun structuredBlocks(state: GarminDataDetailState): List<FullDataBlock> 
             )
         )
     }
-    state.sleeps.forEachIndexed { index, sleep ->
-        add(
-            FullDataBlock(
-                title = if (state.sleeps.size == 1) "睡眠" else "睡眠 ${index + 1}",
-                source = healthSourceLabel(sleep.source),
-                rows = sleep.toRows(),
-                accent = VitaTertiary,
-            )
-        )
-    }
     val exerciseGroups = state.exercises.groupBy { ExerciseClassifier.displayCategory(it) }
     exerciseGroups.forEach { (category, exercises) ->
         add(
@@ -473,21 +463,6 @@ private fun structuredBlocks(state: GarminDataDetailState): List<FullDataBlock> 
                 source = exercises.map { healthSourceLabel(it.source) }.distinct().joinToString(" · "),
                 rows = exercises.toExerciseRows(),
                 accent = VitaActive,
-            )
-        )
-    }
-    if (state.heartRates.isNotEmpty()) {
-        val values = state.heartRates.map { it.bpm }
-        add(
-            FullDataBlock(
-                title = "全天心率",
-                source = state.heartRates.map { healthSourceLabel(it.source) }.distinct().joinToString(" · "),
-                rows = listOf(
-                    GarminDisplayRow("采样", "${state.heartRates.size} 个点"),
-                    GarminDisplayRow("平均", "${values.average().toInt()} bpm"),
-                    GarminDisplayRow("范围", "${values.min()}-${values.max()} bpm"),
-                ),
-                accent = VitaHeart,
             )
         )
     }

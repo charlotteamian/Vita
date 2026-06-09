@@ -12,6 +12,7 @@ import com.vita.healthtracker.ui.screens.garmin.GarminDataDetailScreen
 import com.vita.healthtracker.ui.screens.life.LifeScreen
 import com.vita.healthtracker.ui.screens.life.HabitBadgeDetailScreen
 import com.vita.healthtracker.ui.screens.life.HabitDetailScreen
+import com.vita.healthtracker.ui.screens.life.MoodJournalScreen
 import com.vita.healthtracker.ui.screens.settings.SettingsScreen
 import com.vita.healthtracker.ui.screens.stats.StatsScreen
 import com.vita.healthtracker.ui.screens.today.BodyBatteryDetailScreen
@@ -55,6 +56,10 @@ fun VitaNavHost(
 
         composable("habit_badges") {
             HabitBadgeDetailScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable("mood_journal") {
+            MoodJournalScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

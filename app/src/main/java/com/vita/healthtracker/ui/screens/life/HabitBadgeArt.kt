@@ -40,20 +40,47 @@ private val BadgeHazard     = Color(0xFFF5A24A)
 private val BadgeHazardDeep = Color(0xFF6E3411)
 private val BadgeCaution    = Color(0xFFF0D04A)
 
+/** 徽章主色：用于 3D 币的边缘金属色等。 */
+fun habitBadgeRimColor(badge: HabitBadge): Color = when (badge.style) {
+    HabitBadgeStyle.Crowley -> BadgeDemon
+    HabitBadgeStyle.Aziraphale -> BadgeGold
+    HabitBadgeStyle.Doctor -> BadgeTime
+    HabitBadgeStyle.Stage -> BadgeStage
+    HabitBadgeStyle.Legendary -> BadgeGold
+    HabitBadgeStyle.LabAcid -> BadgeAcid
+    HabitBadgeStyle.PortalPlasma -> BadgePlasma
+    HabitBadgeStyle.ReactorHazard -> BadgeHazard
+    HabitBadgeStyle.RiftBreak -> BadgeRift
+    HabitBadgeStyle.LabApex -> BadgeGold
+}
+
+/** 八角徽章奖牌轮廓（160 坐标系），3D 币的厚度层复用。 */
+fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBadgeOctagon(color: Color) {
+    val scale = kotlin.math.min(size.width, size.height) / 160f
+    val dx = (size.width - 160f * scale) / 2f
+    val dy = (size.height - 160f * scale) / 2f
+    val point: (Float, Float) -> Offset = { x, y -> Offset(dx + x * scale, dy + y * scale) }
+    drawPath(octagon(point), color)
+}
+
 @Composable
 fun HabitBadgeImage(
     badge: HabitBadge,
     earned: Boolean,
     modifier: Modifier = Modifier,
     iconSize: Dp = 82.dp,
+    plate: Boolean = true,
 ) {
     val alpha = if (earned) 1f else 0.34f
+    val base = modifier.size(iconSize).alpha(alpha)
     Box(
-        modifier = modifier
-            .size(iconSize)
-            .alpha(alpha)
-            .clip(RoundedCornerShape(iconSize / 5))
-            .background(Color.White.copy(alpha = if (earned) 0.045f else 0.025f)),
+        modifier = if (plate) {
+            base
+                .clip(RoundedCornerShape(iconSize / 5))
+                .background(Color.White.copy(alpha = if (earned) 0.045f else 0.025f))
+        } else {
+            base
+        },
     ) {
         Canvas(modifier = Modifier.matchParentSize()) {
             val scale = kotlin.math.min(size.width, size.height) / 160f

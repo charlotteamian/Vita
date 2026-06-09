@@ -107,7 +107,7 @@ fun AccountAuthScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                "把第三方运动 / 健康账号直连到 Vita。登录令牌仅在本机加密存储, 数据不上云。",
+                "连接第三方运动 / 健康账号后，Vita 可以帮你同步记录。登录信息只保存在这台设备上，不会上传到 Vita 云端。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

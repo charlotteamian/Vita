@@ -9,8 +9,10 @@ import com.vita.healthtracker.data.local.dao.ExerciseDao
 import com.vita.healthtracker.data.local.dao.GarminRawDao
 import com.vita.healthtracker.data.local.dao.HabitDao
 import com.vita.healthtracker.data.local.dao.HeartRateDao
+import com.vita.healthtracker.data.local.dao.MoodDao
 import com.vita.healthtracker.data.local.dao.SleepDao
 import com.vita.healthtracker.data.local.dao.SyncMarkerDao
+import com.vita.healthtracker.data.local.dao.WeatherDao
 import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.BodyBatterySample
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
@@ -19,8 +21,10 @@ import com.vita.healthtracker.data.local.entity.GarminRawRecord
 import com.vita.healthtracker.data.local.entity.HabitCheckIn
 import com.vita.healthtracker.data.local.entity.HabitDefinition
 import com.vita.healthtracker.data.local.entity.HeartRateSample
+import com.vita.healthtracker.data.local.entity.MoodEntry
 import com.vita.healthtracker.data.local.entity.SleepSession
 import com.vita.healthtracker.data.local.entity.SyncMarker
+import com.vita.healthtracker.data.local.entity.WeatherEntry
 
 @Database(
     entities = [
@@ -33,9 +37,11 @@ import com.vita.healthtracker.data.local.entity.SyncMarker
         GarminRawRecord::class,
         HabitDefinition::class,
         HabitCheckIn::class,
+        MoodEntry::class,
+        WeatherEntry::class,
         SyncMarker::class,
     ],
-    version = 9,
+    version = 11,
     exportSchema = true,
 )
 abstract class VitaDatabase : RoomDatabase() {
@@ -47,5 +53,7 @@ abstract class VitaDatabase : RoomDatabase() {
     abstract fun bodyBatteryDao(): BodyBatteryDao
     abstract fun garminRawDao(): GarminRawDao
     abstract fun habitDao(): HabitDao
+    abstract fun moodDao(): MoodDao
+    abstract fun weatherDao(): WeatherDao
     abstract fun syncMarkerDao(): SyncMarkerDao
 }

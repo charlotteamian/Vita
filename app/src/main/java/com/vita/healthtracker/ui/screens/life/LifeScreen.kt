@@ -66,8 +66,10 @@ import com.vita.healthtracker.R
 import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.HabitCheckIn
 import com.vita.healthtracker.data.local.entity.HabitDefinition
+import com.vita.healthtracker.data.local.entity.MoodEntry
 import com.vita.healthtracker.data.local.entity.SleepSession
 import com.vita.healthtracker.domain.DayStatus
+import com.vita.healthtracker.domain.MoodCatalog
 import com.vita.healthtracker.domain.HabitBadge
 import com.vita.healthtracker.domain.HabitBadgeCatalog
 import com.vita.healthtracker.domain.PredictionConfidence
@@ -127,6 +129,29 @@ fun LifeScreen(navController: NavController) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
+            LifeOverviewCard(
+                state = state,
+                onMoodClick = { navController.navigate("mood_journal") },
+                onHabitClick = { navController.navigate("habit_detail") },
+                onSleepClick = { navController.navigate("sleep_detail") },
+            )
+        }
+
+        // 记录页先服务每天真正会做的动作: 打卡。
+        item {
+            HabitTodaySection(
+                habits = state.habits,
+                checkIns = state.habitCheckIns,
+                onOpenDetail = { navController.navigate("habit_detail") },
+                onAddHabit = { showHabitDialog = true },
+                onMark = { habitId, date, status, current ->
+                    badgeCheckArmed = true
+                    vm.markHabit(habitId, date, status, current)
+                },
+            )
+        }
+
+        item {
             HabitBadgeSummaryCard(
                 habitEarnedCount = state.earnedBadgeIds.size,
                 habitTotal = HabitBadgeCatalog.badges.size,
@@ -134,6 +159,13 @@ fun LifeScreen(navController: NavController) {
                 fitnessTotal = HabitBadgeCatalog.fitnessBadges.size,
                 longestStreakDays = state.habitLongestStreakDays,
                 onClick = { navController.navigate("habit_badges") },
+            )
+        }
+
+        item {
+            MoodSummaryCard(
+                moods = state.moods,
+                onClick = { navController.navigate("mood_journal") },
             )
         }
 
@@ -183,20 +215,6 @@ fun LifeScreen(navController: NavController) {
                     }
                 }
             }
-        }
-
-        // ---- 习惯记录板块 ----
-        item {
-            HabitTodaySection(
-                habits = state.habits,
-                checkIns = state.habitCheckIns,
-                onOpenDetail = { navController.navigate("habit_detail") },
-                onAddHabit = { showHabitDialog = true },
-                onMark = { habitId, date, status, current ->
-                    badgeCheckArmed = true
-                    vm.markHabit(habitId, date, status, current)
-                },
-            )
         }
 
         item {
@@ -297,6 +315,141 @@ fun LifeScreen(navController: NavController) {
         }
     }
 }
+
+@Composable
+private fun LifeOverviewCard(
+    state: LifeUiState,
+    onMoodClick: () -> Unit,
+    onHabitClick: () -> Unit,
+    onSleepClick: () -> Unit,
+) {
+    val today = remember { LocalDate.now() }
+    val todayMood = MoodCatalog.byId(state.moods[today.toString()]?.moodId)
+    val todayDone = state.habits.count { habit ->
+        state.habitCheckIns.any {
+            it.habitId == habit.id &&
+                it.date == today.toString() &&
+                it.status == HabitCheckIn.StatusDone
+        }
+    }
+    val latestSleep = state.recentSleeps.maxByOrNull { it.endEpochMs }
+    val week = remember(today) { (6 downTo 0).map { today.minusDays(it.toLong()) } }
+    val moodLogged = week.count { state.moods.containsKey(it.toString()) }
+    val sleepAverage = state.recentSleeps
+        .take(7)
+        .takeIf { it.isNotEmpty() }
+        ?.map { it.totalMinutes }
+        ?.average()
+        ?.toLong()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(VitaGradients.primaryAccent, MaterialTheme.shapes.large)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "生活概览",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = lifeOverviewSentence(todayMood?.label, todayDone, state.habits.size, latestSleep),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = VitaOnSurfaceMuted,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
+                }
+                MoodGlyph(mood = todayMood, size = 44.dp, filled = todayMood != null)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                LifeSignalPill(
+                    label = "情绪",
+                    value = todayMood?.label ?: "未记",
+                    detail = if (moodLogged == 7) "近7天都记了" else "近7天记了 $moodLogged 天",
+                    color = todayMood?.let { Color(it.colorHex) } ?: VitaPrimary,
+                    onClick = onMoodClick,
+                    modifier = Modifier.weight(1f),
+                )
+                LifeSignalPill(
+                    label = "习惯",
+                    value = "$todayDone/${state.habits.size}",
+                    detail = "最长 ${state.habitLongestStreakDays} 天",
+                    color = VitaActive,
+                    onClick = onHabitClick,
+                    modifier = Modifier.weight(1f),
+                )
+                LifeSignalPill(
+                    label = "睡眠",
+                    value = latestSleep?.let { sleepTextShort(it.totalMinutes) } ?: "暂无",
+                    detail = sleepAverage?.let { "近7次平均 ${sleepTextShort(it)}" } ?: "近14天",
+                    color = VitaTertiary,
+                    onClick = onSleepClick,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LifeSignalPill(
+    label: String,
+    value: String,
+    detail: String,
+    color: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = VitaOnSurfaceMuted, maxLines = 1)
+        Text(
+            value,
+            style = MaterialTheme.typography.titleSmall,
+            color = color,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(detail, style = MaterialTheme.typography.labelSmall, color = VitaOnSurfaceMuted, maxLines = 1)
+    }
+}
+
+private fun lifeOverviewSentence(
+    moodLabel: String?,
+    habitDone: Int,
+    habitTotal: Int,
+    sleep: SleepSession?,
+): String {
+    val mood = moodLabel?.let { "今天心情：$it" } ?: "今天还没记心情"
+    val habit = if (habitTotal > 0) "习惯完成 $habitDone/$habitTotal" else "还没设置习惯"
+    val sleepText = sleep?.let { "昨晚睡了 ${sleepTextLong(it.totalMinutes)}" } ?: "暂无睡眠记录"
+    return "$mood；$habit；$sleepText"
+}
+
+private fun sleepTextShort(minutes: Long): String = "${minutes / 60}h${minutes % 60}m"
+
+private fun sleepTextLong(minutes: Long): String = "${minutes / 60} 小时 ${minutes % 60} 分钟"
 
 @Composable
 private fun CycleSection(
@@ -945,7 +1098,7 @@ private fun flowLabel(flow: Int): String = when (flow) {
     else -> "—"
 }
 
-// ──── 贝叶斯预测卡片 ────────────────────────────────────────
+// ──── 周期预测卡片 ────────────────────────────────────────
 
 @Composable
 private fun BayesianPredictionCard(state: LifeUiState, modifier: Modifier = Modifier) {
@@ -1039,9 +1192,8 @@ private fun BayesianPredictionCard(state: LifeUiState, modifier: Modifier = Modi
                     modifier = Modifier.padding(top = 4.dp),
                 )
 
-                // 后验周期均值
                 Text(
-                    text = "贝叶斯周期估计: %.1f ± %.1f 天".format(
+                    text = "根据已记录的周期，近期平均约 %.1f 天，可能上下浮动 %.1f 天。".format(
                         prediction.posteriorMeanCycleLength,
                         prediction.posteriorStdCycleLength
                     ),
@@ -1108,27 +1260,87 @@ private fun BayesianPredictionCard(state: LifeUiState, modifier: Modifier = Modi
                         color = progressColor,
                         trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     )
-                    Text(
-                        text = "${prediction.confidence.labelCn} (${prediction.totalCyclesRecorded}个周期)",
+                Text(
+                    text = "${prediction.confidence.labelCn} (${prediction.totalCyclesRecorded}个周期)",
                         style = MaterialTheme.typography.labelSmall,
                         color = progressColor,
                     )
                 }
             } else {
-                // 无预测时
                 Text(
-                    text = "记录至少 2 次经期即可启动贝叶斯预测",
+                    text = "至少记录 2 次经期后，就能开始给出预计日期",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.padding(top = 12.dp),
                 )
                 Text(
-                    text = "基于 Normal-Normal 共轭先验模型，记录越多预测越准确",
+                    text = "记录越完整，预计日期会越贴近你的实际节奏。这里只作为生活提醒，不用于避孕或医疗判断。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
+        }
+    }
+}
+
+/**
+ * 生活页「情绪」入口卡：左侧今日心情发光体 + 标签/记录提示，右侧近 7 天迷你情绪条。
+ * 点击进入情绪轨迹页 (mood_journal)。
+ */
+@Composable
+private fun MoodSummaryCard(
+    moods: Map<String, MoodEntry>,
+    onClick: () -> Unit,
+) {
+    val today = remember { LocalDate.now() }
+    val week = remember(today) { (6 downTo 0).map { today.minusDays(it.toLong()) } }
+    val todayMood = MoodCatalog.byId(moods[today.toString()]?.moodId)
+    val logged = week.count { moods.containsKey(it.toString()) }
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(VitaGradients.primaryAccent, MaterialTheme.shapes.medium)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            // 与成就系统卡片的徽章槽 (78dp) 等宽, 保证两张卡片文本列左缘对齐。
+            Box(modifier = Modifier.size(78.dp), contentAlignment = Alignment.Center) {
+                MoodGlyph(mood = todayMood, size = 52.dp, filled = todayMood != null)
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "情绪轨迹",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = todayMood?.let { "今天 · ${it.label}" } ?: "记录今天的心情",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = todayMood?.let { Color(it.colorHex) } ?: VitaOnSurfaceMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "近 7 天已记录 $logged / 7",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = VitaOnSurfaceMuted,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    week.forEach { d ->
+                        val m = MoodCatalog.byId(moods[d.toString()]?.moodId)
+                        MoodGlyph(mood = m, size = 18.dp, filled = m != null)
+                    }
+                }
+            }
+            Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "查看情绪轨迹", tint = VitaOnSurfaceMuted)
         }
     }
 }

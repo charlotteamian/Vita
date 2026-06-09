@@ -7,11 +7,15 @@ import com.vita.healthtracker.data.local.entity.HabitDefinition
 import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
 import com.vita.healthtracker.data.local.entity.ExerciseSession
+import com.vita.healthtracker.data.local.entity.MoodEntry
 import com.vita.healthtracker.data.local.entity.SleepSession
+import com.vita.healthtracker.data.local.entity.WeatherEntry
 import com.vita.healthtracker.data.prefs.SettingsPreferences
 import com.vita.healthtracker.data.repository.CycleRepository
 import com.vita.healthtracker.data.repository.HabitRepository
 import com.vita.healthtracker.data.repository.HealthRepository
+import com.vita.healthtracker.data.repository.MoodRepository
+import com.vita.healthtracker.data.repository.WeatherRepository
 import com.vita.healthtracker.domain.BayesianCycleModel
 import com.vita.healthtracker.domain.CyclePrediction
 import com.vita.healthtracker.domain.DayStatus
@@ -43,6 +47,8 @@ data class LifeUiState(
     val entries: List<CycleEntry> = emptyList(),
     val cyclePeriods: List<CyclePeriod> = emptyList(),
     val recentSleeps: List<SleepSession> = emptyList(),
+    val moods: Map<String, MoodEntry> = emptyMap(),
+    val weather: Map<String, WeatherEntry> = emptyMap(),
     val habits: List<HabitDefinition> = emptyList(),
     val habitCheckIns: List<HabitCheckIn> = emptyList(),
     val habitCurrentStreakDays: Int = 0,
@@ -52,6 +58,7 @@ data class LifeUiState(
     val earnedBadgeCounts: Map<String, Int> = emptyMap(),
     val earnedBadgeTotalCount: Int = 0,
     val shownBadgeTokens: Set<String> = emptySet(),
+    val badgeUnlockDates: Map<String, String> = emptyMap(),
     // ── 健身徽章 ──
     val fitnessEarnedIds: Set<String> = emptySet(),
     val fitnessProgress: Map<String, FitnessProgress> = emptyMap(),
@@ -65,6 +72,8 @@ class LifeViewModel(
     private val cycleRepo: CycleRepository,
     private val healthRepo: HealthRepository,
     private val habitRepo: HabitRepository,
+    private val moodRepo: MoodRepository,
+    private val weatherRepo: WeatherRepository,
     private val settingsPreferences: SettingsPreferences,
 ) : ViewModel() {
 
@@ -77,16 +86,23 @@ class LifeViewModel(
         val today = LocalDate.now()
         val sleepFrom = LocalDate.now().minusDays(14).atStartOfDay(zone).toInstant()
 
+        val journal = combine(
+            moodRepo.observeRange(today.minusDays(370), today),
+            weatherRepo.observeRange(today.minusDays(370), today),
+        ) { moods, weather -> JournalData(moods, weather) }
         val base = combine(
             cycleRepo.observeAll(),
             _prediction,
             _todayStatus,
             healthRepo.sleepRange(sleepFrom, now),
-        ) { entries, prediction, todayStatus, sleeps ->
+            journal,
+        ) { entries, prediction, todayStatus, sleeps, journalData ->
             LifeUiState(
                 entries = entries,
                 cyclePeriods = groupIntoPeriods(entries),
                 recentSleeps = sleeps.sortedByDescending { it.startEpochMs },
+                moods = journalData.moods.associateBy { it.date },
+                weather = journalData.weather.associateBy { it.date },
                 prediction = prediction,
                 todayStatus = todayStatus,
             )
@@ -96,7 +112,8 @@ class LifeViewModel(
             habitRepo.observeActiveHabits(),
             habitRepo.observeCheckIns(today.minusDays(364), today),
             settingsPreferences.shownHabitBadgeTokens,
-        ) { baseState, habits, checkIns, shownTokens ->
+            settingsPreferences.badgeUnlockDates,
+        ) { baseState, habits, checkIns, shownTokens, unlockDates ->
             val currentStreak = habits.maxOfOrNull { habit ->
                 HabitBadgeCatalog.currentStreak(checkIns, today, habit.id)
             } ?: 0
@@ -115,6 +132,7 @@ class LifeViewModel(
                 earnedBadgeCounts = earnedCounts,
                 earnedBadgeTotalCount = earnedCounts.values.sum(),
                 shownBadgeTokens = shownTokens,
+                badgeUnlockDates = unlockDates,
             )
         }.let { withHabits ->
             val fitnessFrom = today.minusDays(365L).atStartOfDay(zone).toInstant()
@@ -141,6 +159,15 @@ class LifeViewModel(
             }
         }
         viewModelScope.launch { cycleRepo.syncFromHealthConnect() }
+        // 第一次观察到某徽章已获得就记录解锁日期（幂等, 不覆盖旧日期）。
+        viewModelScope.launch {
+            state.collect { s ->
+                val earned = s.earnedBadgeIds + s.fitnessEarnedIds
+                if (earned.isNotEmpty()) {
+                    settingsPreferences.recordBadgeUnlocks(earned, LocalDate.now().toString())
+                }
+            }
+        }
     }
 
     /** 把日期范围内每天都记录；只有用户勾选时才把第一天标记为周期起始日。 */
@@ -177,6 +204,30 @@ class LifeViewModel(
         }
     }
 
+    fun setMood(date: LocalDate, moodId: String, note: String = "") {
+        viewModelScope.launch {
+            moodRepo.setMood(date, moodId, note)
+        }
+    }
+
+    fun clearMood(date: LocalDate) {
+        viewModelScope.launch {
+            moodRepo.clearMood(date)
+        }
+    }
+
+    fun setWeather(date: LocalDate, weatherId: String) {
+        viewModelScope.launch {
+            weatherRepo.setWeather(date, weatherId)
+        }
+    }
+
+    fun clearWeather(date: LocalDate) {
+        viewModelScope.launch {
+            weatherRepo.clearWeather(date)
+        }
+    }
+
     fun markHabit(habitId: String, date: LocalDate, status: Int, currentStatus: Int?) {
         viewModelScope.launch {
             if (currentStatus == status) {
@@ -190,6 +241,12 @@ class LifeViewModel(
     fun archiveHabit(habitId: String) {
         viewModelScope.launch {
             habitRepo.archiveHabit(habitId)
+        }
+    }
+
+    fun renameHabit(habitId: String, name: String) {
+        viewModelScope.launch {
+            habitRepo.renameHabit(habitId, name)
         }
     }
 
@@ -212,6 +269,11 @@ class LifeViewModel(
             refreshPredictionFromEntries(cycleRepo.getAll())
         }
     }
+
+    private data class JournalData(
+        val moods: List<MoodEntry>,
+        val weather: List<WeatherEntry>,
+    )
 
     private fun refreshPredictionFromEntries(allEntries: List<CycleEntry>) {
         val periods = groupIntoPeriods(allEntries)

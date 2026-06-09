@@ -70,10 +70,35 @@ class SettingsPreferences(context: Context) {
         }
     }
 
+    /**
+     * 徽章首次解锁日期 (badgeId -> ISO 日期)。每条以 "badgeId|yyyy-MM-dd" 存进 Set。
+     * 用于 3D 徽章卡翻面显示「解锁于 …」。第一次观察到已获得就写入, 之后不覆盖。
+     */
+    val badgeUnlockDates: Flow<Map<String, String>> = ds.data.map { prefs ->
+        (prefs[KEY_BADGE_UNLOCK_DATES] ?: emptySet()).mapNotNull { entry ->
+            val idx = entry.indexOf('|')
+            if (idx <= 0 || idx >= entry.length - 1) null
+            else entry.substring(0, idx) to entry.substring(idx + 1)
+        }.toMap()
+    }
+
+    suspend fun recordBadgeUnlocks(ids: Set<String>, dateIso: String) {
+        if (ids.isEmpty()) return
+        ds.edit { prefs ->
+            val existing = prefs[KEY_BADGE_UNLOCK_DATES] ?: emptySet()
+            val existingIds = existing.mapNotNull { entry ->
+                entry.substringBefore('|', "").takeIf { it.isNotEmpty() }
+            }.toSet()
+            val toAdd = ids.filter { it !in existingIds }.map { "$it|$dateIso" }
+            if (toAdd.isNotEmpty()) prefs[KEY_BADGE_UNLOCK_DATES] = existing + toAdd
+        }
+    }
+
     companion object {
         private val KEY_WEEK_START = stringPreferencesKey("week_start_day")
         private val KEY_HOME_METRICS = stringSetPreferencesKey("home_metrics")
         private val KEY_SHOWN_HABIT_BADGE_TOKENS = stringSetPreferencesKey("shown_habit_badge_tokens")
         private val KEY_SHOWN_FITNESS_BADGE_IDS = stringSetPreferencesKey("shown_fitness_badge_ids")
+        private val KEY_BADGE_UNLOCK_DATES = stringSetPreferencesKey("badge_unlock_dates")
     }
 }

@@ -3,14 +3,31 @@ package com.vita.healthtracker.ui.screens.today
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vita.healthtracker.data.local.entity.BodyBatterySample
+import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
 import com.vita.healthtracker.data.local.entity.ExerciseSession
+import com.vita.healthtracker.data.local.entity.HabitCheckIn
+import com.vita.healthtracker.data.local.entity.HabitDefinition
+import com.vita.healthtracker.data.local.entity.MoodEntry
 import com.vita.healthtracker.data.local.entity.SleepSession
 import com.vita.healthtracker.data.prefs.SettingsPreferences
+import com.vita.healthtracker.data.repository.CycleRepository
+import com.vita.healthtracker.data.repository.HabitRepository
 import com.vita.healthtracker.data.repository.HealthRepository
+import com.vita.healthtracker.data.repository.MoodRepository
 import com.vita.healthtracker.data.sync.SyncCoordinator
+import com.vita.healthtracker.domain.AnomalyCategory
+import com.vita.healthtracker.domain.AnomalyEvent
+import com.vita.healthtracker.domain.AnomalyEventEngine
+import com.vita.healthtracker.domain.DailyBrief
+import com.vita.healthtracker.domain.DailyBriefAnalyzer
 import com.vita.healthtracker.domain.ExerciseClassifier
 import com.vita.healthtracker.domain.HomeMetric
+import com.vita.healthtracker.domain.ReadinessEngine
+import com.vita.healthtracker.domain.ScoreMetric
+import com.vita.healthtracker.domain.StatusScore
+import com.vita.healthtracker.domain.TrendAnalyzer
+import com.vita.healthtracker.domain.TrendReport
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -35,6 +52,16 @@ data class TodayUiState(
     val syncTotal: Int = 0,
     val lastSyncedAt: Instant? = null,
     val syncMessage: String? = null,
+    /** 今日状态分 + 洞察 (跨维度恢复评分引擎输出); 无可评分数据时为 null。 */
+    val readiness: StatusScore? = null,
+    /** 首页首屏简报: 一句判断、一条建议、三个依据和连续变化。 */
+    val dailyBrief: DailyBrief? = null,
+    /** 满足持续时间、偏离幅度和样本量门槛的本地预警事件。 */
+    val anomalyEvents: List<AnomalyEvent> = emptyList(),
+    /** 月度身体趋势 (近30天 vs 上个30天); 样本不足为 null。 */
+    val monthTrend: TrendReport? = null,
+    /** 年度身体趋势 (近90天 vs 去年同期); 样本不足为 null。 */
+    val yearTrend: TrendReport? = null,
     /** 用户在设置里勾选要在首页展示的数据项 (HomeMetric.key)。 */
     val enabledMetrics: Set<String> = HomeMetric.DEFAULT_KEYS,
 ) {
@@ -47,6 +74,9 @@ class TodayViewModel(
     private val repo: HealthRepository,
     private val prefs: SettingsPreferences,
     private val syncCoordinator: SyncCoordinator,
+    private val habitRepo: HabitRepository,
+    private val moodRepo: MoodRepository,
+    private val cycleRepo: CycleRepository,
 ) : ViewModel() {
 
     private val _selectedDate = MutableStateFlow(LocalDate.now())
@@ -64,17 +94,80 @@ class TodayViewModel(
             ) { daily, sleeps, exercises, bodyBattery ->
                 TodayDayData(daily, sleeps, exercises, bodyBattery)
             }
+            // 全量本地历史: 评分仍只截近 60 天，但规律发现可以使用多年沉淀数据。
+            // 数据量按“天”计，十年也只有几千行，适合直接在本机分析。
+            val historyData = combine(
+                repo.dailyRange(HISTORY_START, date.minusDays(1)),
+                repo.sleepRange(HISTORY_START.atStartOfDay(zone).toInstant(), dayEnd),
+            ) { historyDaily, historySleep ->
+                BaselineData(historyDaily, historySleep)
+            }
+            val lifestyleData = combine(
+                habitRepo.observeActiveHabits(),
+                habitRepo.observeCheckIns(HISTORY_START, date),
+                moodRepo.observeRange(HISTORY_START, date),
+                cycleRepo.observeRange(HISTORY_START, date),
+            ) { habits, checkIns, moods, cycles ->
+                LifestyleData(habits, checkIns, moods, cycles)
+            }
             combine(
                 dayData,
+                historyData,
+                lifestyleData,
                 syncCoordinator.status,
                 repo.observeLastSyncedAt(),
-            ) { data, sync, syncedAt ->
+            ) { data, history, lifestyle, sync, syncedAt ->
                 val selectedSleep = data.sleeps
                     .filter { it.totalMinutes > 0 && sleepDisplayDate(it, zone) == date }
                     .maxByOrNull { it.endEpochMs }
                 val visibleExercises = data.exercises
                     .filter { ExerciseClassifier.shouldShowInStats(it, zone) }
                     .sortedByDescending { it.startEpochMs }
+                // 评分只用近 60 天个人基线; 趋势用完整历史窗口。
+                val sixtyAgo = date.minusDays(BASELINE_DAYS).toString()
+                val baselineDaily = history.daily.filter { it.date in sixtyAgo..date.toString() }
+                val sleepCutoffMs = date.minusDays(BASELINE_DAYS).atStartOfDay(zone).toInstant().toEpochMilli()
+                val baselineSleep = history.sleeps.filter { it.endEpochMs >= sleepCutoffMs }
+                val readiness = ReadinessEngine.evaluate(
+                    date = date.toString(),
+                    today = data.daily.firstOrNull(),
+                    lastSleep = selectedSleep,
+                    baselineDaily = baselineDaily,
+                    baselineSleep = baselineSleep,
+                )
+                val monthTrend = TrendAnalyzer.analyze(
+                    TrendAnalyzer.TrendWindow.MONTH, date, history.daily, history.sleeps, zone,
+                )
+                val yearTrend = TrendAnalyzer.analyze(
+                    TrendAnalyzer.TrendWindow.YEAR, date, history.daily, history.sleeps, zone,
+                )
+                val dailyBrief = readiness?.let {
+                    DailyBriefAnalyzer.analyze(
+                        date = date,
+                        score = it,
+                        today = data.daily.firstOrNull(),
+                        lastSleep = selectedSleep,
+                        historyDaily = history.daily,
+                        historySleep = history.sleeps,
+                        monthTrend = monthTrend,
+                        zone = zone,
+                    )
+                }
+                val anomalyEvents = filterRepeatedEvents(
+                    readiness = readiness,
+                    events = AnomalyEventEngine.detect(
+                        date = date,
+                        today = data.daily.firstOrNull(),
+                        lastSleep = selectedSleep,
+                        historyDaily = history.daily,
+                        historySleep = history.sleeps,
+                        habits = lifestyle.habits,
+                        habitCheckIns = lifestyle.checkIns,
+                        moods = lifestyle.moods,
+                        cycleEntries = lifestyle.cycles,
+                        zone = zone,
+                    ),
+                )
                 TodayUiState(
                     date = date,
                     daily = data.daily.firstOrNull(),
@@ -88,6 +181,11 @@ class TodayViewModel(
                     syncTotal = sync.total,
                     lastSyncedAt = syncedAt,
                     syncMessage = sync.message,
+                    readiness = readiness,
+                    dailyBrief = dailyBrief,
+                    anomalyEvents = anomalyEvents,
+                    monthTrend = monthTrend,
+                    yearTrend = yearTrend,
                 )
             }
         }
@@ -103,7 +201,12 @@ class TodayViewModel(
      * @param days 回溯天数; null = 增量。
      */
     fun sync(days: Long? = null) {
-        syncCoordinator.start(days, includeGarmin = true, includeHealthConnect = true)
+        syncCoordinator.start(
+            days = days,
+            includeGarmin = true,
+            includeHealthConnect = true,
+            refreshGarminDetails = true,
+        )
     }
 
     /** 中途停止同步 (修 #3)。 */
@@ -126,6 +229,27 @@ class TodayViewModel(
 
     fun clearMessage() { syncCoordinator.clearMessage() }
 
+    private fun filterRepeatedEvents(
+        readiness: StatusScore?,
+        events: List<AnomalyEvent>,
+    ): List<AnomalyEvent> {
+        if (readiness == null || events.isEmpty()) return events
+        val highlightedMetrics = buildSet {
+            readiness.limits.mapNotNullTo(this) { it.metric }
+            readiness.weakest
+                ?.takeIf { it.subScore < 55 }
+                ?.let { add(it.metric) }
+        }
+        return events
+            .filterNot { event ->
+                event.category == AnomalyCategory.RESPIRATORY &&
+                    (ScoreMetric.SPO2 in highlightedMetrics || ScoreMetric.RESPIRATION in highlightedMetrics)
+            }
+            .filterNot { event ->
+                event.category == AnomalyCategory.SLEEP && ScoreMetric.SLEEP in highlightedMetrics
+            }
+    }
+
     private fun sleepDisplayDate(sleep: SleepSession, zone: ZoneId): LocalDate? =
         runCatching {
             val end = Instant.ofEpochMilli(sleep.endEpochMs).atZone(zone).toLocalDate()
@@ -139,4 +263,21 @@ class TodayViewModel(
         val exercises: List<ExerciseSession>,
         val bodyBattery: List<BodyBatterySample>,
     )
+
+    private data class BaselineData(
+        val daily: List<DailyHealthSnapshot>,
+        val sleeps: List<SleepSession>,
+    )
+
+    private data class LifestyleData(
+        val habits: List<HabitDefinition>,
+        val checkIns: List<HabitCheckIn>,
+        val moods: List<MoodEntry>,
+        val cycles: List<CycleEntry>,
+    )
+
+    private companion object {
+        const val BASELINE_DAYS = 60L
+        val HISTORY_START: LocalDate = LocalDate.of(1900, 1, 1)
+    }
 }

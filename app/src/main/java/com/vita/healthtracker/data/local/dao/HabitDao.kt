@@ -18,15 +18,30 @@ interface HabitDao {
     @Query("SELECT COUNT(*) FROM habit_definition")
     suspend fun countHabits(): Int
 
+    @Query("SELECT * FROM habit_definition")
+    suspend fun allHabits(): List<HabitDefinition>
+
+    @Query("SELECT * FROM habit_check_in")
+    suspend fun allCheckIns(): List<HabitCheckIn>
+
     @Upsert
     suspend fun upsertHabit(habit: HabitDefinition)
 
     @Upsert
+    suspend fun upsertHabits(habits: List<HabitDefinition>)
+
+    @Upsert
     suspend fun upsertCheckIn(checkIn: HabitCheckIn)
+
+    @Upsert
+    suspend fun upsertCheckIns(checkIns: List<HabitCheckIn>)
 
     @Query("DELETE FROM habit_check_in WHERE habitId = :habitId AND date = :date")
     suspend fun clearCheckIn(habitId: String, date: String)
 
     @Query("UPDATE habit_definition SET isArchived = 1 WHERE id = :habitId")
     suspend fun archiveHabit(habitId: String)
+
+    @Query("UPDATE habit_definition SET name = :name WHERE id = :habitId")
+    suspend fun renameHabit(habitId: String, name: String)
 }

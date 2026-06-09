@@ -51,8 +51,8 @@ object GarminRawDisplay {
             )
         }
         val root = parse(record.payloadJson) ?: return GarminDisplayBlock(
-            headline = "原始数据解析失败",
-            meaning = "这类数据已经保存到本机, 但这次返回格式暂时无法解析成可读指标。",
+            headline = "这类数据暂时看不懂",
+            meaning = "记录已经保存在设备上，只是目前还不能整理成清晰的指标。",
             rows = emptyList(),
             hiddenCount = 0,
         )
@@ -489,20 +489,20 @@ object GarminRawDisplay {
     private fun meaningFor(categoryKey: String): String {
         val key = categoryKey.lowercase()
         return when {
-            key.contains("heart") -> "反映当天心率水平和全天变化, 可用于观察运动强度、恢复和异常波动。"
-            key.contains("hrv") -> "心率变异性通常用于观察恢复和压力状态, 数值更适合结合个人长期趋势看。"
-            key.contains("stress") -> "压力来自 Garmin 算法估算, 适合看一天内紧张和放松的变化。"
-            key.contains("sleep") -> "展示睡眠总时长、分期和评分等信息, 用来判断睡眠质量。"
-            key.contains("body_battery") -> "身体电量是 Garmin 对精力恢复和消耗的综合估计。"
-            key.contains("spo2") -> "血氧用于观察血氧饱和度水平, 低值需要结合佩戴状态判断。"
-            key.contains("respiration") -> "呼吸率是每分钟呼吸次数, 可辅助观察睡眠和恢复状态。"
-            key.contains("intensity") -> "强度活动时间统计中高强度运动分钟数。"
-            key.contains("activity") -> "运动记录包含时长、距离、消耗、心率、分段和轨迹等明细。"
-            key.contains("training") -> "训练状态/准备度用于判断当前是否适合继续训练或需要恢复。"
+            key.contains("heart") -> "这里整理当天心率和全天变化，可辅助回看运动强度和恢复情况。"
+            key.contains("hrv") -> "心率变异性适合和自己的长期变化一起看，用来辅助观察恢复和压力。"
+            key.contains("stress") -> "压力记录可帮助回看一天里紧张和放松的变化。"
+            key.contains("sleep") -> "这里整理睡眠总时长、分期和评分等信息，方便回看睡眠质量。"
+            key.contains("body_battery") -> "身体电量反映一天里的精力恢复和消耗，可作为日常参考。"
+            key.contains("spo2") -> "血氧用于观察血氧饱和度水平；低值请先结合佩戴状态和身体感受复核。"
+            key.contains("respiration") -> "呼吸率是每分钟呼吸次数，可辅助观察睡眠和恢复状态。"
+            key.contains("intensity") -> "这里整理中高强度活动时间，方便回看当天活动量。"
+            key.contains("activity") -> "运动记录包含时长、距离、消耗和心率等明细。"
+            key.contains("training") -> "训练相关数据可辅助判断近期训练负荷和恢复节奏。"
             key.contains("body_composition") -> "身体成分包含体重、BMI 等体测数据。"
             key.contains("hydration") || key.contains("nutrition") -> "饮水和营养记录用于观察摄入目标和实际记录。"
             key.contains("menstrual") -> "经期详情用于展示周期相关记录。"
-            else -> "这里只展示已识别且有实际含义的指标；未适配字段仍完整保存在本机。"
+            else -> "这里只展示目前能整理清楚的内容；其他记录仍保存在设备上，后续可以继续适配。"
         }
     }
 

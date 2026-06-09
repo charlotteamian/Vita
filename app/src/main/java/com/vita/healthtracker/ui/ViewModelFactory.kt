@@ -22,18 +22,34 @@ class VitaViewModelFactory(private val container: AppContainer) : ViewModelProvi
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T = when {
         modelClass.isAssignableFrom(TodayViewModel::class.java) ->
-            TodayViewModel(container.healthRepository, container.settingsPreferences, container.syncCoordinator) as T
+            TodayViewModel(
+                container.healthRepository,
+                container.settingsPreferences,
+                container.syncCoordinator,
+                container.habitRepository,
+                container.moodRepository,
+                container.cycleRepository,
+            ) as T
         modelClass.isAssignableFrom(BodyBatteryDetailViewModel::class.java) ->
             BodyBatteryDetailViewModel(container.healthRepository) as T
         modelClass.isAssignableFrom(GarminDataDetailViewModel::class.java) ->
             GarminDataDetailViewModel(container.healthRepository, container.cycleRepository) as T
         modelClass.isAssignableFrom(StatsViewModel::class.java) ->
-            StatsViewModel(container.healthRepository, container.settingsPreferences) as T
+            StatsViewModel(
+                container.healthRepository,
+                container.settingsPreferences,
+                container.habitRepository,
+                container.moodRepository,
+                container.cycleRepository,
+                container.weatherRepository,
+            ) as T
         modelClass.isAssignableFrom(LifeViewModel::class.java) ->
             LifeViewModel(
                 container.cycleRepository,
                 container.healthRepository,
                 container.habitRepository,
+                container.moodRepository,
+                container.weatherRepository,
                 container.settingsPreferences,
             ) as T
         modelClass.isAssignableFrom(com.vita.healthtracker.ui.screens.life.SleepDetailViewModel::class.java) ->

@@ -152,14 +152,20 @@ class GarminDataFetcher(private val authClient: GarminAuthClient) {
         }.orEmpty()
     }
 
-    suspend fun fetchDailyRawPayloads(date: LocalDate): List<GarminRawPayload> = withContext(Dispatchers.IO) {
+    suspend fun fetchDailyRawPayloads(
+        date: LocalDate,
+        skipCategoryKeys: Set<String> = emptySet(),
+    ): List<GarminRawPayload> = withContext(Dispatchers.IO) {
         val dateStr = date.format(fmt)
         val displayName = authClient.requireDisplayName()
-        fetchRawPayloads(rawDailyEndpoints(dateStr, displayName))
+        fetchRawPayloads(rawDailyEndpoints(dateStr, displayName).filterNot { it.key in skipCategoryKeys })
     }
 
-    suspend fun fetchActivityRawPayloads(activity: GarminActivity): List<GarminRawPayload> = withContext(Dispatchers.IO) {
-        fetchRawPayloads(rawActivityEndpoints(activity.id, activity.name))
+    suspend fun fetchActivityRawPayloads(
+        activity: GarminActivity,
+        skipCategoryKeys: Set<String> = emptySet(),
+    ): List<GarminRawPayload> = withContext(Dispatchers.IO) {
+        fetchRawPayloads(rawActivityEndpoints(activity.id, activity.name).filterNot { it.key in skipCategoryKeys })
     }
 
     private suspend fun fetchRawPayloads(endpoints: List<RawEndpoint>): List<GarminRawPayload> = coroutineScope {

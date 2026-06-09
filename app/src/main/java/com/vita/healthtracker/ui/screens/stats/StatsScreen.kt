@@ -1,6 +1,7 @@
 package com.vita.healthtracker.ui.screens.stats
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,8 +44,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -53,27 +56,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import com.patrykandpatrick.vico.compose.cartesian.CartesianChartHost
-import com.patrykandpatrick.vico.compose.cartesian.axis.rememberAxisLabelComponent
-import com.patrykandpatrick.vico.compose.cartesian.axis.rememberBottom
-import com.patrykandpatrick.vico.compose.cartesian.axis.rememberStart
-import com.patrykandpatrick.vico.compose.cartesian.layer.rememberColumnCartesianLayer
-import com.patrykandpatrick.vico.compose.cartesian.layer.rememberLine
-import com.patrykandpatrick.vico.compose.cartesian.layer.rememberLineCartesianLayer
-import com.patrykandpatrick.vico.compose.cartesian.rememberCartesianChart
-import com.patrykandpatrick.vico.compose.common.component.rememberLineComponent
-import com.patrykandpatrick.vico.compose.common.fill
-import com.patrykandpatrick.vico.core.cartesian.axis.HorizontalAxis
-import com.patrykandpatrick.vico.core.cartesian.axis.VerticalAxis
-import com.patrykandpatrick.vico.core.cartesian.data.CartesianChartModelProducer
-import com.patrykandpatrick.vico.core.cartesian.data.CartesianValueFormatter
-import com.patrykandpatrick.vico.core.cartesian.data.columnSeries
-import com.patrykandpatrick.vico.core.cartesian.data.lineSeries
-import com.patrykandpatrick.vico.core.cartesian.layer.ColumnCartesianLayer
-import com.patrykandpatrick.vico.core.cartesian.layer.LineCartesianLayer
-import com.patrykandpatrick.vico.core.common.shape.CorneredShape
 import com.vita.healthtracker.data.local.entity.ExerciseSession
 import com.vita.healthtracker.domain.ExerciseClassifier
+import com.vita.healthtracker.domain.LocalAssociationReport
+import com.vita.healthtracker.domain.LongTermTrendReport
 import com.vita.healthtracker.domain.healthSourceLabel
 import com.vita.healthtracker.ui.components.RangeSelector
 import com.vita.healthtracker.ui.components.StatsRange
@@ -84,8 +70,6 @@ import com.vita.healthtracker.ui.theme.VitaOnSurfaceMuted
 import com.vita.healthtracker.ui.theme.VitaPrimary
 import com.vita.healthtracker.ui.theme.VitaTertiary
 import com.vita.healthtracker.ui.vitaViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -97,85 +81,23 @@ fun StatsScreen(navController: NavController) {
     val vm = vitaViewModel<StatsViewModel>()
     val state by vm.state.collectAsStateWithLifecycle()
 
-    // 关键: 按 range 重新创建 producer。Vico 2.0.0-beta.3 在切换区间(列数变化, 如周7根→月12根→年5根)
-    // 时会对新旧模型做差值动画, 列数不一致会在主线程绘制时崩溃(月/年闪退)。
-    // 每次切换都给一个全新的空 producer, 走 空→N 这条安全路径即可避免。
-    val stepsProducer = remember(state.range) { CartesianChartModelProducer() }
-    val sleepProducer = remember(state.range) { CartesianChartModelProducer() }
-    val hrProducer = remember(state.range) { CartesianChartModelProducer() }
-
-    // 深色背景下, Vico 默认坐标轴文字是深色看不清; 统一换成浅色标签。
-    val axisLabel = rememberAxisLabelComponent(color = VitaOnSurfaceMuted)
-
     // 预计算 xLabels（直接从 state 中取）
     val xLabels = state.xLabels
     val stepSeries = remember(state.daily, xLabels) {
-        state.daily.zip(xLabels).mapNotNull { (day, label) ->
-            day.steps.takeIf { it > 0L }?.let { label to it.toDouble() }
+        state.daily.zip(xLabels).map { (day, label) ->
+            label to day.steps.takeIf { it > 0L }?.toDouble()
         }
     }
     val sleepSeries = remember(state.sleeps, xLabels) {
-        state.sleeps.zip(xLabels).mapNotNull { (sleep, label) ->
-            (sleep.totalMinutes.toDouble() / 60.0).takeIf { it > 0.0 }?.let { label to it }
+        state.sleeps.zip(xLabels).map { (sleep, label) ->
+            label to (sleep.totalMinutes.toDouble() / 60.0).takeIf { it > 0.0 }
         }
     }
     val hrSeries = remember(state.daily, xLabels) {
-        state.daily.zip(xLabels).mapNotNull { (day, label) ->
-            day.avgHeartRate?.takeIf { it > 0 }?.let { label to it.toDouble() }
+        state.daily.zip(xLabels).map { (day, label) ->
+            label to day.avgHeartRate?.takeIf { it > 0 }?.toDouble()
         }
     }
-    fun formatterFor(labels: List<String>) = CartesianValueFormatter { _, value, _ ->
-        labels.getOrNull(value.toInt()).orEmpty()
-    }
-    val stepAxisFormatter = remember(stepSeries) { formatterFor(stepSeries.map { it.first }) }
-    val sleepAxisFormatter = remember(sleepSeries) { formatterFor(sleepSeries.map { it.first }) }
-    val hrAxisFormatter = remember(hrSeries) { formatterFor(hrSeries.map { it.first }) }
-    val initialChartScroll = if (state.range == StatsRange.Month) {
-        com.patrykandpatrick.vico.core.cartesian.Scroll.Absolute.Start
-    } else {
-        com.patrykandpatrick.vico.core.cartesian.Scroll.Absolute.End
-    }
-    val chartHorizontalSpacing = when (state.range) {
-        StatsRange.Month -> 30.dp
-        StatsRange.Year -> 34.dp
-        else -> 12.dp
-    }
-
-    LaunchedEffect(stepSeries, sleepSeries, hrSeries, state.range) {
-        if (state.range != StatsRange.Day) {
-            withContext(Dispatchers.Default) {
-                try {
-                    val stepValues = stepSeries.map { it.second }
-                    if (stepValues.any { it > 0 }) {
-                        stepsProducer.runTransaction {
-                            columnSeries { series(stepValues) }
-                        }
-                    }
-                } catch (_: Exception) {}
-                try {
-                    val hrValues = hrSeries.map { it.second }
-                    if (hrValues.any { it > 0 }) {
-                        hrProducer.runTransaction {
-                            lineSeries { series(hrValues) }
-                        }
-                    }
-                } catch (_: Exception) {}
-            }
-        }
-        if (state.range != StatsRange.Day) {
-            withContext(Dispatchers.Default) {
-                try {
-                    val sleepValues = sleepSeries.map { it.second }
-                    if (sleepValues.any { it > 0 }) {
-                        sleepProducer.runTransaction {
-                            columnSeries { series(sleepValues) }
-                        }
-                    }
-                } catch (_: Exception) {}
-            }
-        }
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -183,6 +105,13 @@ fun StatsScreen(navController: NavController) {
             .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        state.longTermTrend?.let {
+            LongTermTrendCard(it)
+        }
+        state.localAssociations?.let {
+            LocalAssociationCard(it)
+        }
+
         StatsCalendarCard(
             state = state,
             onPreviousMonth = vm::previousCalendarMonth,
@@ -204,64 +133,45 @@ fun StatsScreen(navController: NavController) {
         } else if (state.range == StatsRange.All) {
             // ─── 全部: 整段历史累计总览卡片 (不画图) ───
             state.allTimeSummary?.let { AllTimeSummaryCard(it) }
-        } else key(state.range) {
+        } else key(state.range, state.periodLabel) {
             // ─── 周/月/年统计: 图表 ───
-            // 用 key(range) 包住整个图表子树, 切换区间时整体重建, 杜绝跨区间的图表状态残留。
+            // 周期图表使用 Compose Canvas 自绘，避开 Vico beta 在稀疏数据和跨周期模型更新时的崩溃路径。
+            // 周期导航条: 在固定窗口内翻页 (上一周/月/年 ↔ 下一周/月/年), 不再铺一条无限时间轴。
+            PeriodNavigator(
+                label = state.periodLabel,
+                canGoNext = state.canGoNextPeriod,
+                onPrevious = vm::previousPeriod,
+                onNext = vm::nextPeriod,
+                onToday = vm::jumpPeriodToToday,
+            )
             ChartCard(title = "步数", accentColor = VitaPrimary) {
-                val hasSteps = stepSeries.isNotEmpty()
+                val hasSteps = stepSeries.any { it.second != null }
                 if (hasSteps) {
-                    if (stepSeries.size <= 1) {
-                        SinglePeriodMetric(
-                            label = stepSeries.first().first,
-                            value = "%,.0f".format(stepSeries.first().second),
-                            unit = "步",
-                            accentColor = VitaPrimary,
-                        )
-                    } else {
-                        CartesianChartHost(
-                            chart = rememberCartesianChart(
-                                rememberVitaColumnLayer(VitaPrimary, state.range, chartHorizontalSpacing),
-                                startAxis = VerticalAxis.rememberStart(label = axisLabel),
-                                bottomAxis = HorizontalAxis.rememberBottom(
-                                    label = axisLabel,
-                                    valueFormatter = stepAxisFormatter,
-                                    itemPlacer = com.patrykandpatrick.vico.core.cartesian.axis.HorizontalAxis.ItemPlacer.aligned(spacing = 1)
-                                ),
-                            ),
-                            modelProducer = stepsProducer,
-                            scrollState = com.patrykandpatrick.vico.compose.cartesian.rememberVicoScrollState(initialScroll = initialChartScroll),
-                            modifier = Modifier.fillMaxWidth().height(220.dp),
-                        )
-                    }
+                    VitaPeriodChart(
+                        series = stepSeries,
+                        accentColor = VitaPrimary,
+                        style = PeriodChartStyle.Bars,
+                        valueLabel = { "%,.0f 步".format(it) },
+                    )
                 } else {
                     Text("暂无数据", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
-            ChartCard(title = "睡眠时长", accentColor = VitaTertiary) {
-                val hasSleep = sleepSeries.isNotEmpty()
+            ChartCard(
+                title = if (state.range == StatsRange.Year) "睡眠规律" else "睡眠时长",
+                accentColor = VitaTertiary,
+            ) {
+                val hasSleep = sleepSeries.any { it.second != null }
                 if (hasSleep) {
-                    if (sleepSeries.size <= 1) {
-                        SinglePeriodMetric(
-                            label = sleepSeries.first().first,
-                            value = "%.1f".format(sleepSeries.first().second),
-                            unit = "小时",
-                            accentColor = VitaTertiary,
-                        )
+                    if (state.range == StatsRange.Year) {
+                        SleepYearOverview(state.sleepSummaries)
                     } else {
-                        CartesianChartHost(
-                            chart = rememberCartesianChart(
-                                rememberVitaColumnLayer(VitaTertiary, state.range, chartHorizontalSpacing),
-                                startAxis = VerticalAxis.rememberStart(label = axisLabel),
-                                bottomAxis = HorizontalAxis.rememberBottom(
-                                    label = axisLabel,
-                                    valueFormatter = sleepAxisFormatter,
-                                    itemPlacer = com.patrykandpatrick.vico.core.cartesian.axis.HorizontalAxis.ItemPlacer.aligned(spacing = 1)
-                                ),
-                            ),
-                            modelProducer = sleepProducer,
-                            scrollState = com.patrykandpatrick.vico.compose.cartesian.rememberVicoScrollState(initialScroll = initialChartScroll),
-                            modifier = Modifier.fillMaxWidth().height(220.dp),
+                        VitaPeriodChart(
+                            series = sleepSeries,
+                            accentColor = VitaTertiary,
+                            style = PeriodChartStyle.Bars,
+                            valueLabel = { "%.1f 小时".format(it) },
                         )
                     }
                 } else {
@@ -270,31 +180,14 @@ fun StatsScreen(navController: NavController) {
             }
 
             ChartCard(title = "平均心率", accentColor = VitaHeart) {
-                val hasHr = hrSeries.isNotEmpty()
+                val hasHr = hrSeries.any { it.second != null }
                 if (hasHr) {
-                    if (hrSeries.size <= 1) {
-                        SinglePeriodMetric(
-                            label = hrSeries.first().first,
-                            value = "%.0f".format(hrSeries.first().second),
-                            unit = "bpm",
-                            accentColor = VitaHeart,
-                        )
-                    } else {
-                        CartesianChartHost(
-                            chart = rememberCartesianChart(
-                                rememberVitaLineLayer(VitaHeart, chartHorizontalSpacing),
-                                startAxis = VerticalAxis.rememberStart(label = axisLabel),
-                                bottomAxis = HorizontalAxis.rememberBottom(
-                                    label = axisLabel,
-                                    valueFormatter = hrAxisFormatter,
-                                    itemPlacer = com.patrykandpatrick.vico.core.cartesian.axis.HorizontalAxis.ItemPlacer.aligned(spacing = 1)
-                                ),
-                            ),
-                            modelProducer = hrProducer,
-                            scrollState = com.patrykandpatrick.vico.compose.cartesian.rememberVicoScrollState(initialScroll = initialChartScroll),
-                            modifier = Modifier.fillMaxWidth().height(220.dp),
-                        )
-                    }
+                    VitaPeriodChart(
+                        series = hrSeries,
+                        accentColor = VitaHeart,
+                        style = PeriodChartStyle.Line,
+                        valueLabel = { "%.0f bpm".format(it) },
+                    )
                 } else {
                     Text("暂无数据", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -324,6 +217,149 @@ fun StatsScreen(navController: NavController) {
                     onExerciseClick = { ex -> navController.navigate("exercise/${ex.id}") }
                 )
             }
+        }
+    }
+}
+
+/** 趋势页的第一张卡: 先回答多年发生了什么，再让图表和日历提供证据。 */
+@Composable
+private fun LongTermTrendCard(report: LongTermTrendReport) {
+    ChartCard(title = "你的长期变化", accentColor = VitaTertiary) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            val fmt = remember { DateTimeFormatter.ofPattern("yyyy-MM-dd") }
+            Text(
+                text = "${report.firstDate.format(fmt)} ~ ${report.lastDate.format(fmt)} · ${report.trackedDays} 个有记录日",
+                style = MaterialTheme.typography.bodySmall,
+                color = VitaOnSurfaceMuted,
+            )
+            Text(
+                text = report.headline,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            report.changes.forEach { change ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(VitaTertiary.copy(alpha = 0.07f), RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = change.label,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = change.deltaText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = VitaTertiary,
+                        )
+                    }
+                    Text(
+                        text = change.analysisText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "${change.note} · 共 ${change.sampleDays} 天记录",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = VitaOnSurfaceMuted,
+                    )
+                }
+            }
+            Text(
+                text = "只统计已经记录到的日子；空白日期不会补成 0。",
+                style = MaterialTheme.typography.bodySmall,
+                color = VitaOnSurfaceMuted,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LocalAssociationCard(report: LocalAssociationReport) {
+    ChartCard(title = "可能有关的事", accentColor = VitaPrimary) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                text = if (report.insightCount > 0) {
+                    "从你的记录里，暂时看到 ${report.insightCount} 个可能有关的模式。"
+                } else {
+                    "还在积累记录；数据不够时，Vita 不会硬下结论。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = VitaOnSurfaceMuted,
+            )
+            report.topics.forEach { topic ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(VitaPrimary.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = topic.title,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    topic.finding?.let {
+                        Text(it, style = MaterialTheme.typography.bodyMedium, color = VitaPrimary)
+                    }
+                    Text(topic.evidence, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(topic.note, style = MaterialTheme.typography.bodySmall, color = VitaOnSurfaceMuted)
+                }
+            }
+            Text(
+                text = "这里只提醒哪些事情常常一起出现，不代表其中一件一定导致另一件。",
+                style = MaterialTheme.typography.bodySmall,
+                color = VitaOnSurfaceMuted,
+            )
+        }
+    }
+}
+
+/** 周/月/年图表的周期导航条: ‹ 周期标题 › + 「今日」回当前周期。 */
+@Composable
+private fun PeriodNavigator(
+    label: String,
+    canGoNext: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onToday: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(VitaGradients.cardSurface, RoundedCornerShape(14.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onPrevious) {
+            Icon(Icons.AutoMirrored.Outlined.KeyboardArrowLeft, contentDescription = "上一期", tint = VitaPrimary)
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            maxLines = 1,
+        )
+        if (canGoNext) {
+            AssistChip(
+                onClick = onToday,
+                label = { Text("今日") },
+                leadingIcon = { Icon(Icons.Outlined.Today, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                colors = AssistChipDefaults.assistChipColors(labelColor = VitaPrimary, leadingIconContentColor = VitaPrimary),
+            )
+        }
+        IconButton(onClick = onNext, enabled = canGoNext) {
+            Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "下一期", tint = if (canGoNext) VitaPrimary else VitaOnSurfaceMuted)
         }
     }
 }
@@ -902,93 +938,132 @@ private fun formatHm(minutes: Long): String {
     return if (h > 0) "${h}h ${m}m" else "${m}m"
 }
 
+private enum class PeriodChartStyle { Bars, Line }
+
+/**
+ * 周期统计用轻量 Canvas 图。这里刻意不走 Vico 的 producer 动画：
+ * 本地历史会出现空槽、稀疏槽和翻页后槽位数量变化，Vico beta 在这些模型之间插值时会闪退。
+ */
 @Composable
-private fun SinglePeriodMetric(
-    label: String,
-    value: String,
-    unit: String,
+private fun VitaPeriodChart(
+    series: List<Pair<String, Double?>>,
     accentColor: Color,
+    style: PeriodChartStyle,
+    valueLabel: (Double) -> String,
 ) {
-    val showLabel = label.length > 1
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(150.dp),
-        verticalArrangement = Arrangement.Center,
-    ) {
-        if (showLabel) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Row(
-            verticalAlignment = Alignment.Bottom,
-            modifier = Modifier.padding(top = if (showLabel) 10.dp else 0.dp, bottom = 18.dp),
-        ) {
-            Text(
-                text = value,
-                style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = unit,
-                style = MaterialTheme.typography.titleMedium,
-                color = accentColor,
-                modifier = Modifier.padding(start = 8.dp, bottom = 8.dp),
-            )
-        }
-        LinearProgressIndicator(
-            progress = { 1f },
+    val values = series.mapNotNull { it.second?.takeIf(Double::isFinite) }
+    if (values.isEmpty()) return
+    val max = values.maxOrNull() ?: 0.0
+    val min = if (style == PeriodChartStyle.Bars) 0.0 else values.minOrNull() ?: 0.0
+    val span = (max - min).takeIf { it > 0.0001 } ?: 1.0
+    val visibleLabels = series.mapIndexedNotNull { index, (label, _) ->
+        label.takeIf { series.size <= 12 || index == 0 || (index + 1) % 5 == 0 || index == series.lastIndex }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "峰值 ${valueLabel(max)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = VitaOnSurfaceMuted,
+        )
+        Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(6.dp),
-            color = accentColor,
-            trackColor = accentColor.copy(alpha = 0.12f),
-        )
+                .height(168.dp),
+        ) {
+            val horizontalPadding = 4.dp.toPx()
+            val verticalPadding = 8.dp.toPx()
+            val chartWidth = (size.width - horizontalPadding * 2).coerceAtLeast(1f)
+            val chartHeight = (size.height - verticalPadding * 2).coerceAtLeast(1f)
+            val bottom = verticalPadding + chartHeight
+            val gridColor = VitaOnSurfaceMuted.copy(alpha = 0.12f)
+            for (i in 0..3) {
+                val y = verticalPadding + chartHeight * i / 3f
+                drawLine(gridColor, Offset(horizontalPadding, y), Offset(horizontalPadding + chartWidth, y), 1.dp.toPx())
+            }
+            fun yFor(value: Double): Float =
+                bottom - (((value - min) / span).coerceIn(0.0, 1.0) * chartHeight).toFloat()
+
+            if (style == PeriodChartStyle.Bars) {
+                val slot = chartWidth / series.size.coerceAtLeast(1)
+                val width = (slot * 0.58f).coerceAtMost(18.dp.toPx()).coerceAtLeast(3.dp.toPx())
+                series.forEachIndexed { index, (_, value) ->
+                    if (value == null || !value.isFinite()) return@forEachIndexed
+                    val top = yFor(value)
+                    val left = horizontalPadding + slot * index + (slot - width) / 2f
+                    drawRoundRect(
+                        color = accentColor,
+                        topLeft = Offset(left, top),
+                        size = androidx.compose.ui.geometry.Size(width, (bottom - top).coerceAtLeast(2.dp.toPx())),
+                        cornerRadius = CornerRadius(width / 2f),
+                    )
+                }
+            } else {
+                val slot = chartWidth / (series.size - 1).coerceAtLeast(1)
+                val points = series.mapIndexed { index, (_, value) ->
+                    value?.takeIf(Double::isFinite)?.let { Offset(horizontalPadding + slot * index, yFor(it)) }
+                }
+                points.zipWithNext().forEach { (from, to) ->
+                    if (from == null || to == null) return@forEach
+                    drawLine(
+                        color = accentColor,
+                        start = from,
+                        end = to,
+                        strokeWidth = 3.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                }
+                points.filterNotNull().forEach { point -> drawCircle(accentColor, 3.dp.toPx(), point) }
+            }
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            visibleLabels.forEach { label ->
+                Text(label, style = MaterialTheme.typography.bodySmall, color = VitaOnSurfaceMuted)
+            }
+        }
     }
 }
 
+/** 年视图关注长期规律，而不是把十二根「平均时长」柱孤零零地摆出来。 */
 @Composable
-private fun rememberVitaColumnLayer(
-    accentColor: Color,
-    range: StatsRange,
-    columnCollectionSpacing: androidx.compose.ui.unit.Dp,
-): ColumnCartesianLayer {
-    val columnWidth = when (range) {
-        StatsRange.Month, StatsRange.Year -> 12.dp
-        else -> 10.dp
-    }
-    val columnProvider = ColumnCartesianLayer.ColumnProvider.series(
-        rememberLineComponent(
-            fill = fill(accentColor),
-            thickness = columnWidth,
-            shape = CorneredShape.rounded(45),
-        )
-    )
-    return rememberColumnCartesianLayer(
-        columnProvider = columnProvider,
-        columnCollectionSpacing = columnCollectionSpacing,
-    )
-}
+private fun SleepYearOverview(summaries: List<StatsSleepSummary>) {
+    val tracked = summaries.filter { it.nightsTracked > 0 }
+    val nights = tracked.sumOf { it.nightsTracked }
+    val goalNights = tracked.sumOf { it.goalNights }
+    val avgMinutes = if (nights == 0) 0L else tracked.sumOf { it.avgMinutes * it.nightsTracked } / nights
 
-@Composable
-private fun rememberVitaLineLayer(
-    accentColor: Color,
-    pointSpacing: androidx.compose.ui.unit.Dp,
-): LineCartesianLayer =
-    rememberLineCartesianLayer(
-        lineProvider = LineCartesianLayer.LineProvider.series(
-            LineCartesianLayer.rememberLine(
-                fill = LineCartesianLayer.LineFill.single(fill(accentColor)),
-                thickness = 3.dp,
-                // 线下加一层淡淡的同色面积填充, 比光秃秃的折线更耐看。
-                areaFill = LineCartesianLayer.AreaFill.single(fill(accentColor.copy(alpha = 0.16f))),
-            )
-        ),
-        pointSpacing = pointSpacing,
-    )
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = "全年记录 $nights 晚 · 平均 ${formatHm(avgMinutes)} · ≥7h 达标 $goalNights 晚",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        summaries.forEach { summary ->
+            val progress = (summary.avgMinutes / (8f * 60f)).coerceIn(0f, 1f)
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${summary.date.monthValue}月",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = VitaTertiary,
+                        modifier = Modifier.width(38.dp),
+                    )
+                    Text(
+                        if (summary.nightsTracked > 0) "${formatHm(summary.avgMinutes)} · ${summary.goalNights}/${summary.nightsTracked} 晚达标" else "暂无记录",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth().height(5.dp),
+                    color = VitaTertiary,
+                    trackColor = VitaTertiary.copy(alpha = 0.12f),
+                )
+            }
+        }
+    }
+}
 
 /**
  * 日统计：紧凑的汇总卡片

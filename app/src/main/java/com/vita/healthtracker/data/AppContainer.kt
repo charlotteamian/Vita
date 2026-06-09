@@ -12,11 +12,15 @@ import com.vita.healthtracker.data.local.MIGRATION_5_6
 import com.vita.healthtracker.data.local.MIGRATION_6_7
 import com.vita.healthtracker.data.local.MIGRATION_7_8
 import com.vita.healthtracker.data.local.MIGRATION_8_9
+import com.vita.healthtracker.data.local.MIGRATION_9_10
+import com.vita.healthtracker.data.local.MIGRATION_10_11
 import com.vita.healthtracker.data.local.VitaDatabase
 import com.vita.healthtracker.data.prefs.SettingsPreferences
 import com.vita.healthtracker.data.repository.CycleRepository
 import com.vita.healthtracker.data.repository.HabitRepository
 import com.vita.healthtracker.data.repository.HealthRepository
+import com.vita.healthtracker.data.repository.MoodRepository
+import com.vita.healthtracker.data.repository.WeatherRepository
 import com.vita.healthtracker.data.sensor.StepSensorManager
 import com.vita.healthtracker.data.apple.AppleHealthImporter
 import com.vita.healthtracker.data.garmin.GarminAuthClient
@@ -33,6 +37,8 @@ interface AppContainer {
     val healthRepository: HealthRepository
     val cycleRepository: CycleRepository
     val habitRepository: HabitRepository
+    val moodRepository: MoodRepository
+    val weatherRepository: WeatherRepository
     val backupManager: BackupManager
     val stepSensorManager: StepSensorManager
     val appleHealthImporter: AppleHealthImporter
@@ -60,6 +66,8 @@ class DefaultAppContainer(context: Context) : AppContainer {
                 MIGRATION_6_7,
                 MIGRATION_7_8,
                 MIGRATION_8_9,
+                MIGRATION_9_10,
+                MIGRATION_10_11,
             )
             .build()
     }
@@ -87,6 +95,14 @@ class DefaultAppContainer(context: Context) : AppContainer {
 
     override val habitRepository: HabitRepository by lazy {
         HabitRepository(database.habitDao())
+    }
+
+    override val moodRepository: MoodRepository by lazy {
+        MoodRepository(database.moodDao())
+    }
+
+    override val weatherRepository: WeatherRepository by lazy {
+        WeatherRepository(database.weatherDao())
     }
 
     override val backupManager: BackupManager by lazy {

@@ -32,4 +32,12 @@ interface GarminRawDao {
         """
     )
     suspend fun countForDateDomain(date: String, domain: String): Int
+
+    @Query(
+        """
+        SELECT categoryKey FROM garmin_raw_record
+        WHERE date = :date AND domain = :domain
+        """
+    )
+    suspend fun categoryKeysForDateDomain(date: String, domain: String): List<String>
 }

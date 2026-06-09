@@ -164,6 +164,9 @@ class HealthRepository(
     suspend fun hasGarminRawRecords(date: LocalDate, domain: String): Boolean =
         garminRawDao.countForDateDomain(date.format(dateFmt), domain) > 0
 
+    suspend fun garminRawCategoryKeys(date: LocalDate, domain: String): Set<String> =
+        garminRawDao.categoryKeysForDateDomain(date.format(dateFmt), domain).toSet()
+
     suspend fun lastSyncedAt(): Instant? = syncDao.get(SYNC_KEY_FULL)?.lastSyncedAtEpochMs?.let(Instant::ofEpochMilli)
 
     fun observeLastSyncedAt(): Flow<Instant?> = syncDao.getFlow(SYNC_KEY_FULL).map { it?.lastSyncedAtEpochMs?.let(Instant::ofEpochMilli) }
@@ -236,13 +239,13 @@ class HealthRepository(
         saveExerciseSessions(exercises)
 
         // ---- 按天聚合: steps / distance / calories / floors ----
-        val fromDate = LocalDate.ofInstant(start, zone)
-        val toDate = LocalDate.ofInstant(now, zone)
+        val fromDate = start.atZone(zone).toLocalDate()
+        val toDate = now.atZone(zone).toLocalDate()
         dailyDao.deleteEmptyRows(fromDate.format(dateFmt), toDate.format(dateFmt))
         dailyDao.deleteBmrOnlyRows(fromDate.format(dateFmt), toDate.format(dateFmt))
         // ---- 体重: 按天取该天最后一条 (HC WeightRecord) ----
         val weightByDate = healthConnect.readWeight(recordStart, now)
-            .groupBy { LocalDate.ofInstant(it.time, zone) }
+            .groupBy { it.time.atZone(zone).toLocalDate() }
             .mapValues { (_, recs) -> recs.maxByOrNull { it.time }?.weight?.inKilograms }
 
         val daily = healthConnect.aggregateByDay(fromDate, toDate, zone)

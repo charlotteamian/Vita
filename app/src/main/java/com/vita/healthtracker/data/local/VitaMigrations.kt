@@ -55,6 +55,18 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
     }
 }
 
+val MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        createMoodTable(db)
+    }
+}
+
+val MIGRATION_10_11 = object : Migration(10, 11) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        createWeatherTable(db)
+    }
+}
+
 private fun addDailyInsightColumns(db: SupportSQLiteDatabase) {
     addColumnIfMissing(db, "daily_health", "avgStress", "INTEGER")
     addColumnIfMissing(db, "daily_health", "maxStress", "INTEGER")
@@ -149,6 +161,33 @@ private fun createHabitTables(db: SupportSQLiteDatabase) {
             `status` INTEGER NOT NULL,
             `updatedAtEpochMs` INTEGER NOT NULL,
             PRIMARY KEY(`habitId`, `date`)
+        )
+        """.trimIndent()
+    )
+}
+
+private fun createMoodTable(db: SupportSQLiteDatabase) {
+    db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `mood_entry` (
+            `date` TEXT NOT NULL,
+            `moodId` TEXT NOT NULL,
+            `note` TEXT NOT NULL DEFAULT '',
+            `updatedAtEpochMs` INTEGER NOT NULL,
+            PRIMARY KEY(`date`)
+        )
+        """.trimIndent()
+    )
+}
+
+private fun createWeatherTable(db: SupportSQLiteDatabase) {
+    db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `weather_entry` (
+            `date` TEXT NOT NULL,
+            `weatherId` TEXT NOT NULL,
+            `updatedAtEpochMs` INTEGER NOT NULL,
+            PRIMARY KEY(`date`)
         )
         """.trimIndent()
     )

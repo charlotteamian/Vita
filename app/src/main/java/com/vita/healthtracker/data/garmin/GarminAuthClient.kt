@@ -141,6 +141,20 @@ class GarminAuthClient(context: Context) {
 
     fun loggedDomains(): List<String> = GARMIN_DOMAINS.filter { isLogged(it) }
 
+    /**
+     * 当前活动会话是否还能用 refresh token 续期。
+     * 供同步层判断: 收到 401/403 时, 若仍可续期就不该清掉整个登录态 (多半只是 access token 临时失效)。
+     * 纯只读, 不触碰 SSO / cookie / OAuth / 登录流程本身。
+     */
+    fun canRefreshSession(): Boolean {
+        val now = System.currentTimeMillis() / 1000
+        // DI 续期路径 (refreshDiToken) 不看 refreshExpiresAt; OAuth1→2 路径才看。
+        val diRefresh = !diClientId.isNullOrBlank() && !oauth2RefreshToken.isNullOrBlank()
+        val refreshNotExpired = oauth2RefreshExpiresAt == 0L || oauth2RefreshExpiresAt > now
+        val oauth1Refresh = !oauth1Token.isNullOrBlank() && !oauth1Secret.isNullOrBlank() && refreshNotExpired
+        return diRefresh || oauth1Refresh
+    }
+
     fun isLogged(domain: String): Boolean =
         !prefs.getString(domainKey(domain, "oauth2_access_token"), null).isNullOrBlank()
 

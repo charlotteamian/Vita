@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -82,7 +83,8 @@ fun SleepDetailScreen(onBack: () -> Unit) {
 private fun DetailedSleepRow(sleep: SleepSession) {
     val startDt = Instant.ofEpochMilli(sleep.startEpochMs).atZone(ZoneId.systemDefault())
     val endDt = Instant.ofEpochMilli(sleep.endEpochMs).atZone(ZoneId.systemDefault())
-    val dateStr = startDt.format(DateTimeFormatter.ofPattern("yyyy年M月d日 EEEE"))
+    val dateStr = startDt.format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
+    val weekStr = startDt.format(DateTimeFormatter.ofPattern("EEEE"))
     val timeStr = "${startDt.format(DateTimeFormatter.ofPattern("HH:mm"))} - ${endDt.format(DateTimeFormatter.ofPattern("HH:mm"))}"
 
     Card(
@@ -96,9 +98,28 @@ private fun DetailedSleepRow(sleep: SleepSession) {
                 .padding(16.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(text = dateStr, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                Spacer(modifier = Modifier.weight(1f))
-                Text(text = timeStr, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = dateStr,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = weekStr,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = timeStr,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = VitaTertiary,
+                    maxLines = 1,
+                    softWrap = false,
+                )
             }
             
             Row(

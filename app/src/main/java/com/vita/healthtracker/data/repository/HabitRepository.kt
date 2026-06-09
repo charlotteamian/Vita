@@ -48,6 +48,11 @@ class HabitRepository(
         habitDao.archiveHabit(habitId)
     }
 
+    suspend fun renameHabit(habitId: String, name: String) {
+        val cleanName = name.trim()
+        if (cleanName.isNotBlank()) habitDao.renameHabit(habitId, cleanName)
+    }
+
     private companion object {
         val DefaultHabitColors = listOf(
             0xFF74C0FC,

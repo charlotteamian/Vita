@@ -24,6 +24,8 @@ class GarminSyncManager(
     suspend fun syncAll(
         fromDate: LocalDate,
         toDate: LocalDate,
+        forceRefreshRaw: Boolean = false,
+        backfillMissingRaw: Boolean = false,
         onProgress: (GarminSyncProgress) -> Unit = {},
     ): GarminSyncResult = withContext(Dispatchers.IO) {
         val totalDays = (ChronoUnit.DAYS.between(fromDate, toDate) + 1).toInt().coerceAtLeast(0)
@@ -244,8 +246,15 @@ class GarminSyncManager(
                 }
 
                 if (dayHasGarminSignal) {
-                    val shouldRefreshRaw = !current.isBefore(LocalDate.now().minusDays(2)) ||
-                        !healthRepo.hasGarminRawRecords(current, domain)
+                    // 旧逻辑只要当天存在任意 raw 记录就整天跳过，后来新增的接口和活动明细永远无法补齐。
+                    // 现在按 categoryKey 精确跳过已有接口；首页手动同步还会显式强制刷新完整明细。
+                    val refreshAllRaw = forceRefreshRaw || !current.isBefore(LocalDate.now().minusDays(2))
+                    val archivedKeys = when {
+                        refreshAllRaw -> emptySet()
+                        backfillMissingRaw -> healthRepo.garminRawCategoryKeys(current, domain)
+                        !healthRepo.hasGarminRawRecords(current, domain) -> emptySet()
+                        else -> null
+                    }
                     onProgress(
                         GarminSyncProgress(
                             currentDate = current,
@@ -262,14 +271,14 @@ class GarminSyncManager(
                             updatedDates = updatedDates.toList(),
                         )
                     )
-                    val rawPayloads = if (shouldRefreshRaw) {
-                        runCatching { dataFetcher.fetchDailyRawPayloads(current) }.getOrDefault(emptyList()) +
+                    val rawPayloads = archivedKeys?.let { keys ->
+                        runCatching { dataFetcher.fetchDailyRawPayloads(current, keys) }.getOrDefault(emptyList()) +
                             activities.flatMap { activity ->
-                                runCatching { dataFetcher.fetchActivityRawPayloads(activity) }.getOrDefault(emptyList())
+                                runCatching {
+                                    dataFetcher.fetchActivityRawPayloads(activity, keys)
+                                }.getOrDefault(emptyList())
                             }
-                    } else {
-                        emptyList()
-                    }
+                    }.orEmpty()
                     if (rawPayloads.isNotEmpty()) {
                         healthRepo.saveGarminRawRecords(
                             rawPayloads.map { raw ->
@@ -337,7 +346,11 @@ class GarminSyncManager(
                 )
                 val code = (e as? GarminApiException)?.code
                 if (code == 401 || code == 403) {
-                    authClient.logout()
+                    // 不再因单次 401/403 就清掉整个会话 (修「登录一段时间后自动退出」):
+                    // 只要 refresh token 还能续期, 就保留登录态, 让下次同步用 refresh token
+                    // 自动换新 access token; 仅当 refresh token 也失效时才真正登出并提示重登。
+                    val canKeep = runCatching { authClient.canRefreshSession() }.getOrDefault(false)
+                    if (!canKeep) authClient.logout()
                     return@withContext GarminSyncResult(
                         processedDays = processed,
                         totalDays = totalDays,
@@ -349,8 +362,8 @@ class GarminSyncManager(
                         noDataDays = noDataDays,
                         failedDays = failedDays,
                         updatedDates = updatedDates.toList(),
-                        stoppedByAuth = true,
-                        lastError = lastError,
+                        stoppedByAuth = !canKeep,
+                        lastError = if (canKeep) "凭证临时失效, 登录已保留, 稍后会自动续期, 请重试同步" else lastError,
                         domain = domain,
                     )
                 }

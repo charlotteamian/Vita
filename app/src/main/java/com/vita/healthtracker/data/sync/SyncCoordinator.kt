@@ -67,11 +67,13 @@ class SyncCoordinator(
     /**
      * 启动一次同步。重复调用在运行中会被忽略。
      * @param days   回溯天数; null = 增量 (佳明默认 7 天, HC 走上次终点)。
+     * @param refreshGarminDetails 手动从首页触发时刷新完整 Garmin raw 明细，而不是只补缺失接口。
      */
     fun start(
         days: Long?,
         includeGarmin: Boolean = true,
         includeHealthConnect: Boolean = true,
+        refreshGarminDetails: Boolean = false,
     ) {
         if (_status.value.running) return
         _status.value = SyncUiStatus(running = true, phase = "同步中")
@@ -89,7 +91,12 @@ class SyncCoordinator(
                             // 同步前先清掉这段范围里的 BMR 幽灵数据 (没戴表那天的恒定基础代谢)。
                             runCatching { healthRepo.cleanupBmrOnlyGarmin(fromDate, toDate) }
                             runCatching { healthRepo.cleanupBmrOnlyDaily(fromDate, toDate) }
-                            val result = garminSyncManager.syncAll(fromDate, toDate) { p ->
+                            val result = garminSyncManager.syncAll(
+                                fromDate = fromDate,
+                                toDate = toDate,
+                                forceRefreshRaw = refreshGarminDetails,
+                                backfillMissingRaw = true,
+                            ) { p ->
                                 _status.value = _status.value.copy(
                                     running = true,
                                     source = "garmin",
@@ -153,7 +160,11 @@ class SyncCoordinator(
                 val fromDate = toDate.minusDays(days ?: 7L)
                 runCatching { healthRepo.cleanupBmrOnlyGarmin(fromDate, toDate) }
                 runCatching { healthRepo.cleanupBmrOnlyDaily(fromDate, toDate) }
-                val result = garminSyncManager.syncAll(fromDate, toDate) { p ->
+                val result = garminSyncManager.syncAll(
+                    fromDate = fromDate,
+                    toDate = toDate,
+                    backfillMissingRaw = true,
+                ) { p ->
                     _status.value = _status.value.copy(
                         running = true,
                         source = "garmin",

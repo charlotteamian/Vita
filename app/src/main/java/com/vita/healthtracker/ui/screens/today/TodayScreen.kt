@@ -63,6 +63,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -108,6 +109,7 @@ fun TodayScreen(navController: NavController) {
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var showExercisePicker by remember { mutableStateOf(false) }
+    var showAllTodayData by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.syncMessage) {
         state.syncMessage?.let {
@@ -258,15 +260,57 @@ fun TodayScreen(navController: NavController) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.weight(1f),
         ) {
-            itemsIndexed(cards, key = { _, item -> item.metric.key }) { _, card ->
-                MetricCard(
-                    title = card.metric.label,
-                    value = card.value,
-                    unit = card.unit,
-                    icon = card.icon,
-                    accent = card.accent,
-                    onClick = card.onClick,
-                )
+            // ─── 当日简报: 默认只讲结论、行动和三个关键理由 ───
+            state.readiness?.let { readiness ->
+                state.dailyBrief?.let { brief ->
+                    item(key = "status_score") {
+                        StatusScoreCard(score = readiness, brief = brief)
+                    }
+                }
+            }
+            if (state.anomalyEvents.isNotEmpty()) {
+                item(key = "anomaly_events") {
+                    AnomalyEventsCard(events = state.anomalyEvents)
+                }
+            }
+            state.dailyBrief?.let { brief ->
+                item(key = "life_trajectory") {
+                    LifeTrajectoryCard(brief = brief)
+                }
+            }
+
+            // 没有可评分数据时直接展示明细; 有简报时让首页保持简洁, 明细一键展开。
+            if (state.readiness != null) {
+                item(key = "today_data_toggle") {
+                    TextButton(
+                        onClick = { showAllTodayData = !showAllTodayData },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = if (showAllTodayData) "收起全部今日数据" else "查看全部今日数据 (${cards.size})",
+                            color = VitaPrimary,
+                        )
+                    }
+                }
+            }
+
+            if (state.readiness == null || showAllTodayData) {
+                itemsIndexed(cards, key = { _, item -> item.metric.key }) { _, card ->
+                    MetricCard(
+                        title = card.metric.label,
+                        value = card.value,
+                        unit = card.unit,
+                        icon = card.icon,
+                        accent = card.accent,
+                        onClick = card.onClick,
+                    )
+                }
+                // 月度 / 年度趋势保留在明细层。简报里的「Vita 发现」只摘出最值得注意的一条。
+                if (state.readiness != null) {
+                    item(key = "body_trend") {
+                        BodyTrendCard(monthTrend = state.monthTrend, yearTrend = state.yearTrend)
+                    }
+                }
             }
 
             // ─── 运动记录: 当天每条运动的丰富预览 (时长/距离/消耗/速度/心率) ───

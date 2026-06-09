@@ -22,7 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.DirectionsWalk
-import androidx.compose.material.icons.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.CloudUpload
@@ -145,32 +145,30 @@ fun SettingsScreen(navController: NavController) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),
                 )
-                Row(
-                    modifier = Modifier.padding(top = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    when (state.availability) {
-                        HealthConnectManager.Availability.Installed -> {
-                            val fullyGranted = state.grantedCount == state.totalPermissions
-                            Button(
-                                onClick = {
-                                    runCatching { permLauncher.launch(HealthConnectManager.ALL_PERMISSIONS) }
-                                        .onFailure { vm.showMessage("无法打开系统授权页面, 请确认 Health Connect 已安装并更新") }
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(if (fullyGranted) "HC 授权设置" else stringResource(R.string.settings_grant_permissions))
-                            }
+                when (state.availability) {
+                    HealthConnectManager.Availability.Installed -> {
+                        val fullyGranted = state.grantedCount == state.totalPermissions
+                        Button(
+                            onClick = {
+                                runCatching { permLauncher.launch(HealthConnectManager.ALL_PERMISSIONS) }
+                                    .onFailure { vm.showMessage("无法打开系统授权页面, 请确认 Health Connect 已安装并更新") }
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                        ) {
+                            Text(if (fullyGranted) "HC 授权设置" else stringResource(R.string.settings_grant_permissions))
                         }
-                        HealthConnectManager.Availability.NotInstalled,
-                        HealthConnectManager.Availability.ProviderUpdateRequired -> {
-                            Button(onClick = {
+                    }
+                    HealthConnectManager.Availability.NotInstalled,
+                    HealthConnectManager.Availability.ProviderUpdateRequired -> {
+                        Button(
+                            onClick = {
                                 runCatching { context.startActivity(vm.installHealthConnect()) }
                                     .onFailure { vm.showMessage("打不开应用商店") }
-                            }) { Text(stringResource(R.string.settings_install_hc)) }
-                        }
-                        HealthConnectManager.Availability.NotSupported -> Unit
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                        ) { Text(stringResource(R.string.settings_install_hc)) }
                     }
+                    HealthConnectManager.Availability.NotSupported -> Unit
                 }
             }
         }
@@ -206,7 +204,7 @@ fun SettingsScreen(navController: NavController) {
                         runCatching { context.startActivity(vm.systemPermissionSettingsIntent(context.packageName)) }
                             .onFailure { vm.showMessage("打不开系统权限设置") }
                     },
-                    modifier = Modifier.padding(top = 16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
                 ) {
                     Text("管理授权")
                 }
@@ -256,14 +254,14 @@ fun SettingsScreen(navController: NavController) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
-                Row(
-                    modifier = Modifier.padding(top = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                Column(
+                    modifier = Modifier.padding(top = 16.dp).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Button(
                         onClick = vm::startPhoneStepSensor,
                         enabled = state.phoneStepSensorAvailable,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(if (state.phoneStepSensorRunning) "重新启动同步" else "开启手机同步")
                     }
@@ -272,7 +270,7 @@ fun SettingsScreen(navController: NavController) {
                             runCatching { context.startActivity(vm.systemPermissionSettingsIntent(context.packageName)) }
                                 .onFailure { vm.showMessage("打不开系统权限设置") }
                         },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text("系统权限")
                     }
@@ -308,7 +306,7 @@ fun SettingsScreen(navController: NavController) {
                     )
                 }
                 Icon(
-                    Icons.Outlined.KeyboardArrowRight,
+                    Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

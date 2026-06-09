@@ -2,12 +2,25 @@ package com.vita.healthtracker.ui.screens.stats
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
 import com.vita.healthtracker.data.local.entity.ExerciseSession
+import com.vita.healthtracker.data.local.entity.HabitCheckIn
+import com.vita.healthtracker.data.local.entity.HabitDefinition
+import com.vita.healthtracker.data.local.entity.MoodEntry
 import com.vita.healthtracker.data.local.entity.SleepSession
+import com.vita.healthtracker.data.local.entity.WeatherEntry
 import com.vita.healthtracker.data.prefs.SettingsPreferences
+import com.vita.healthtracker.data.repository.CycleRepository
+import com.vita.healthtracker.data.repository.HabitRepository
 import com.vita.healthtracker.data.repository.HealthRepository
+import com.vita.healthtracker.data.repository.MoodRepository
+import com.vita.healthtracker.data.repository.WeatherRepository
 import com.vita.healthtracker.domain.ExerciseClassifier
+import com.vita.healthtracker.domain.LocalAssociationAnalyzer
+import com.vita.healthtracker.domain.LocalAssociationReport
+import com.vita.healthtracker.domain.LongTermTrendAnalyzer
+import com.vita.healthtracker.domain.LongTermTrendReport
 import com.vita.healthtracker.ui.components.StatsRange
 import java.time.DayOfWeek
 import java.time.YearMonth
@@ -39,6 +52,16 @@ data class StatsUiState(
     val dayExtras: List<StatsRangeSummary> = emptyList(),
     /** 「全部」视图的累计总览 (不画图, 只用大数字汇总全部历史)。 */
     val allTimeSummary: AllTimeSummary? = null,
+    /** 周/月/年图表当前所看周期的标题 (如「2026年5月」「2026年」「5/25 – 5/31」)。 */
+    val periodLabel: String = "",
+    /** 是否还能往后翻一个周期 (即当前周期不是最新的, 后面还有更近的周期)。 */
+    val canGoNextPeriod: Boolean = false,
+    /** 睡眠按当前图表槽位聚合后的摘要。年视图用它展示记录覆盖率和达标夜数。 */
+    val sleepSummaries: List<StatsSleepSummary> = emptyList(),
+    /** 容忍断档的多年变化摘要: 按自然年聚合有记录日均值。 */
+    val longTermTrend: LongTermTrendReport? = null,
+    /** 完全在本机计算的跨维度关联库。 */
+    val localAssociations: LocalAssociationReport? = null,
 )
 
 data class StatsHistoryMonth(
@@ -93,6 +116,14 @@ data class StatsExerciseSummary(
     val distanceMeters: Double,
 )
 
+data class StatsSleepSummary(
+    val date: LocalDate,
+    val avgMinutes: Long,
+    val nightsTracked: Int,
+    val goalNights: Int,
+    val avgScore: Int?,
+)
+
 data class StatsCalendarDay(
     val date: LocalDate,
     val inMonth: Boolean,
@@ -121,36 +152,51 @@ data class StatsDayDetail(
 class StatsViewModel(
     private val repo: HealthRepository,
     private val prefs: SettingsPreferences,
+    private val habitRepo: HabitRepository,
+    private val moodRepo: MoodRepository,
+    private val cycleRepo: CycleRepository,
+    private val weatherRepo: WeatherRepository,
 ) : ViewModel() {
 
     private val _range = MutableStateFlow(StatsRange.Week)
     private val _calendarMonth = MutableStateFlow(YearMonth.now())
     private val _selectedDate = MutableStateFlow(LocalDate.now())
+    // 周/月/年图表的「当前周期锚点」: 一个落在所看周期内的日期。翻页只动它, 不影响下方日历。
+    private val _anchor = MutableStateFlow(LocalDate.now())
 
     val state: StateFlow<StatsUiState> =
-        combine(_range, prefs.weekStartDay, _calendarMonth, _selectedDate) { range, weekStart, calendarMonth, selectedDate ->
-            StatsInputs(range, weekStart, calendarMonth, selectedDate)
+        combine(_range, prefs.weekStartDay, _calendarMonth, _selectedDate, _anchor) { range, weekStart, calendarMonth, selectedDate, anchor ->
+            StatsInputs(range, weekStart, calendarMonth, selectedDate, anchor)
         }.flatMapLatest { input ->
         val range = input.range
         val weekStart = input.weekStart
         val calendarMonth = input.calendarMonth
         val selectedDate = input.selectedDate
+        val anchor = input.anchor
         val today = LocalDate.now()
-        val from = when (range) {
+        // 周/月/年改为「固定窗口 + 翻页」: 每个周期只看一个完整窗口 (周=7天 / 月=该月全部天 / 年=12个月),
+        // 由 anchor 决定看哪个周期; 不再把所有月份/年份铺成一条无限时间轴。
+        val periodStart: LocalDate
+        val periodEnd: LocalDate
+        when (range) {
             // 日视图: 多拉最近 7 天, 供「昨日 / 过去三天 / 过去七天」汇总 (#4)。
-            StatsRange.Day -> today.minusDays(6)
-            // 周视图: 对齐到「一周开始日」偏好(周一/周日), 取本周起始日。
-            StatsRange.Week -> startOfWeek(today, weekStart)
-            // 月视图要从数据库里最早有数据的月份开始, 所以先拉完整本地历史。
-            StatsRange.Month -> LocalDate.of(1900, 1, 1)
-            StatsRange.Year -> LocalDate.of(1900, 1, 1)
-            // 「全部」: 整段历史, 同样从最早拉起。
-            StatsRange.All -> LocalDate.of(1900, 1, 1)
+            StatsRange.Day -> { periodStart = today.minusDays(6); periodEnd = today }
+            // 周视图: 对齐到「一周开始日」偏好(周一/周日), 取所看周的起始日。
+            StatsRange.Week -> { periodStart = startOfWeek(anchor, weekStart); periodEnd = periodStart.plusDays(6) }
+            // 月视图: 所看月份的 1 号到月末。
+            StatsRange.Month -> { val ym = YearMonth.from(anchor); periodStart = ym.atDay(1); periodEnd = ym.atEndOfMonth() }
+            // 年视图: 所看年份的 1/1 到 12/31。
+            StatsRange.Year -> { periodStart = LocalDate.of(anchor.year, 1, 1); periodEnd = LocalDate.of(anchor.year, 12, 31) }
+            // 「全部」: 整段历史, 从最早拉起 (下方提前返回, 不走窗口逻辑)。
+            StatsRange.All -> { periodStart = LocalDate.of(1900, 1, 1); periodEnd = today }
         }
+        val from = periodStart
         val zone = ZoneId.systemDefault()
         val fromInstant = from.atStartOfDay(zone).toInstant()
         val sleepFromInstant = from.minusDays(1).atStartOfDay(zone).toInstant()
         val toInstant = today.plusDays(1).atStartOfDay(zone).toInstant()
+        // 图表只查「当前周期窗口」, 而不是一路查到今天 (过去的月份/年份不该再带今天的数据)。
+        val chartToInstant = periodEnd.plusDays(1).atStartOfDay(zone).toInstant()
         val calendarStart = calendarMonth.atDay(1)
         val calendarEnd = calendarMonth.atEndOfMonth()
         val calendarStartInstant = calendarStart.atStartOfDay(zone).toInstant()
@@ -158,9 +204,9 @@ class StatsViewModel(
         val calendarEndInstant = calendarEnd.plusDays(1).atStartOfDay(zone).toInstant()
 
         val chartFlow = combine(
-            repo.dailyRange(from, today),
-            repo.sleepRange(sleepFromInstant, toInstant),
-            repo.exerciseRange(fromInstant, toInstant),
+            repo.dailyRange(from, periodEnd),
+            repo.sleepRange(sleepFromInstant, chartToInstant),
+            repo.exerciseRange(fromInstant, chartToInstant),
         ) { daily, sleeps, exercises -> ChartSource(daily, sleeps, exercises) }
 
         val calendarFlow = combine(
@@ -175,12 +221,34 @@ class StatsViewModel(
             repo.exerciseRange(LocalDate.of(1900, 1, 1).atStartOfDay(zone).toInstant(), toInstant),
         ) { daily, sleeps, exercises -> ChartSource(daily, sleeps, exercises) }
 
-        combine(chartFlow, calendarFlow, historyFlow) { chart, calendar, history ->
+        val lifestyleFlow = combine(
+            habitRepo.observeActiveHabits(),
+            habitRepo.observeCheckIns(LocalDate.of(1900, 1, 1), today),
+            moodRepo.observeRange(LocalDate.of(1900, 1, 1), today),
+            cycleRepo.observeRange(LocalDate.of(1900, 1, 1), today),
+            weatherRepo.observeRange(LocalDate.of(1900, 1, 1), today),
+        ) { habits, checkIns, moods, cycles, weather ->
+            LifestyleSource(habits, checkIns, moods, cycles, weather)
+        }
+
+        combine(chartFlow, calendarFlow, historyFlow, lifestyleFlow) { chart, calendar, history, lifestyle ->
             val daily = chart.daily
             val sleeps = chart.sleeps
             val exercises = chart.exercises.filter { ExerciseClassifier.shouldShowInStats(it, zone) }
             val historyExercises = history.exercises.filter { ExerciseClassifier.shouldShowInStats(it, zone) }
             val historyMonths = buildHistoryMonths(history.daily, history.sleeps, historyExercises, zone)
+            val longTermTrend = LongTermTrendAnalyzer.analyze(history.daily, history.sleeps, zone)
+            val localAssociations = LocalAssociationAnalyzer.analyze(
+                daily = history.daily,
+                sleeps = history.sleeps,
+                exercises = historyExercises,
+                habits = lifestyle.habits,
+                habitCheckIns = lifestyle.checkIns,
+                moods = lifestyle.moods,
+                cycleEntries = lifestyle.cycles,
+                weather = lifestyle.weather,
+                zone = zone,
+            )
 
             // 「全部」视图不画图, 直接汇总整段历史返回 (不用走下面的网格/图表逻辑)。
             if (range == StatsRange.All) {
@@ -196,8 +264,20 @@ class StatsViewModel(
                     xLabels = emptyList(),
                     dayExtras = emptyList(),
                     allTimeSummary = buildAllTimeSummary(daily, sleeps, exercises, zone),
+                    longTermTrend = longTermTrend,
+                    localAssociations = localAssociations,
                 )
             }
+
+            // 运动明细列表应只展示「所选区间当期」的运动, 而不是图表为了铺历史而拉的宽窗口。
+            // (否则: 选「日」会显示最近一周, 选「月/年」会显示全部历史 —— 与所选粒度不符。)
+            // 运动明细只展示所选周期窗口内的运动 (日=今天 / 周=所看周 / 月=所看月 / 年=所看年)。
+            val detailFrom = if (range == StatsRange.Day) today else periodStart
+            val detailTo = periodEnd
+            val detailExercises = exercises.filter {
+                val d = runCatching { Instant.ofEpochMilli(it.startEpochMs).atZone(zone).toLocalDate() }.getOrNull()
+                d != null && !d.isBefore(detailFrom) && !d.isAfter(detailTo)
+            }.sortedByDescending { it.startEpochMs }
 
             // Generate full date grid based on range
             val dateGrid = mutableListOf<LocalDate>()
@@ -205,44 +285,25 @@ class StatsViewModel(
             when (range) {
                 StatsRange.All -> Unit // 已在上方提前返回, 这里不会执行。
                 StatsRange.Day -> dateGrid.add(today)
-                StatsRange.Week -> {
-                    for (i in 0..6) dateGrid.add(from.plusDays(i.toLong()))
-                }
+                // 周: 所看周的 7 天 (周一→周日, 已按偏好对齐)。
+                StatsRange.Week -> for (i in 0..6) dateGrid.add(periodStart.plusDays(i.toLong()))
+                // 月: 所看月份的每一天 (28-31 个槽位), 没数据的天后续会被图表过滤掉。
                 StatsRange.Month -> {
-                    val monthsWithData = mutableSetOf<LocalDate>()
-                    daily.filter { it.hasChartableData() }.forEach {
-                        runCatching { monthsWithData.add(LocalDate.parse(it.date).withDayOfMonth(1)) }
-                    }
-                    sleeps.filter { it.totalMinutes > 0 }.forEach {
-                        runCatching { sleepDisplayDate(it, zone)?.withDayOfMonth(1)?.let(monthsWithData::add) }
-                    }
-                    exercises.forEach {
-                        runCatching { monthsWithData.add(Instant.ofEpochMilli(it.startEpochMs).atZone(zone).toLocalDate().withDayOfMonth(1)) }
-                    }
-
-                    dateGrid.addAll(monthsWithData.sorted())
+                    val ym = YearMonth.from(anchor)
+                    for (d in 1..ym.lengthOfMonth()) dateGrid.add(ym.atDay(d))
                 }
-                StatsRange.Year -> {
-                    val yearsWithData = mutableSetOf<LocalDate>()
-                    daily.filter { it.hasChartableData() }.forEach { runCatching { yearsWithData.add(LocalDate.parse(it.date).withDayOfYear(1)) } }
-                    sleeps.filter { it.totalMinutes > 0 }.forEach { runCatching { sleepDisplayDate(it, zone)?.withDayOfYear(1)?.let(yearsWithData::add) } }
-                    exercises.forEach { runCatching { yearsWithData.add(Instant.ofEpochMilli(it.startEpochMs).atZone(zone).toLocalDate().withDayOfYear(1)) } }
-                    
-                    val sortedYears = yearsWithData.filter { !it.isBefore(from) }.sorted()
-                    if (sortedYears.isEmpty()) {
-                        dateGrid.add(today.withDayOfYear(1))
-                    } else {
-                        dateGrid.addAll(sortedYears)
-                    }
-                }
+                // 年: 所看年份的 12 个月 (每月 1 号代表该月)。
+                StatsRange.Year -> for (m in 1..12) dateGrid.add(LocalDate.of(anchor.year, m, 1))
             }
 
             // Map DB items to grid
             val aggDaily = dateGrid.map { gridDate ->
                 val items = when (range) {
-                    StatsRange.Day, StatsRange.Week, StatsRange.All -> daily.filter { it.date == gridDate.toString() }
-                    StatsRange.Month -> daily.filter { runCatching { LocalDate.parse(it.date).withDayOfMonth(1) }.getOrNull() == gridDate }
-                    StatsRange.Year -> daily.filter { runCatching { LocalDate.parse(it.date).withDayOfYear(1) }.getOrNull() == gridDate }
+                    // 日/周/月: 网格逐天, 精确匹配那一天。
+                    StatsRange.Day, StatsRange.Week, StatsRange.Month, StatsRange.All ->
+                        daily.filter { it.date == gridDate.toString() }
+                    // 年: 网格逐月 (每月 1 号代表该月), 把该月所有天归到这一格。
+                    StatsRange.Year -> daily.filter { runCatching { LocalDate.parse(it.date).withDayOfMonth(1) }.getOrNull() == gridDate }
                 }
                 val exerciseItems = exerciseItemsForGrid(range, gridDate, exercises, zone)
                 val base = if (items.isNotEmpty()) aggregateDaily(range, gridDate, items)
@@ -251,11 +312,7 @@ class StatsViewModel(
             }
 
             val aggSleeps = dateGrid.map { gridDate ->
-                val items = when (range) {
-                    StatsRange.Day, StatsRange.Week, StatsRange.All -> sleeps.filter { sleepDisplayDate(it, zone) == gridDate }
-                    StatsRange.Month -> sleeps.filter { sleepDisplayDate(it, zone)?.withDayOfMonth(1) == gridDate }
-                    StatsRange.Year -> sleeps.filter { sleepDisplayDate(it, zone)?.withDayOfYear(1) == gridDate }
-                }
+                val items = sleepItemsForGrid(range, gridDate, sleeps, zone)
                 if (items.isNotEmpty()) aggregateSleep(gridDate, items, zone)
                 else SleepSession(
                     id = gridDate.toString(),
@@ -269,6 +326,9 @@ class StatsViewModel(
                     sleepScore = null,
                     source = "Empty",
                 )
+            }
+            val sleepSummaries = dateGrid.map { gridDate ->
+                buildSleepSummary(gridDate, sleepItemsForGrid(range, gridDate, sleeps, zone), zone)
             }
 
             // 生成 X 轴标签
@@ -286,10 +346,10 @@ class StatsViewModel(
                             java.time.DayOfWeek.SUNDAY -> "日"
                         }
                     }
-                    StatsRange.Month -> {
-                        "${localDate.year}年${localDate.monthValue}月"
-                    }
-                    StatsRange.Year -> "${localDate.year}"
+                    // 月视图: 逐天展开, X 轴标日号 (1, 2, … 31)。
+                    StatsRange.Month -> "${localDate.dayOfMonth}"
+                    // 年视图: 逐月展开, X 轴标月份 (1月 … 12月)。
+                    StatsRange.Year -> "${localDate.monthValue}月"
                 }
             }
 
@@ -301,17 +361,34 @@ class StatsViewModel(
                 )
             } else emptyList()
 
+            // 周/月/年图表当前所看周期的标题 + 能否再往后翻 (后面还有更近的周期)。
+            val periodLabel = when (range) {
+                StatsRange.Week -> "${periodStart.monthValue}/${periodStart.dayOfMonth} – ${periodEnd.monthValue}/${periodEnd.dayOfMonth}"
+                StatsRange.Month -> "${anchor.year}年${anchor.monthValue}月"
+                StatsRange.Year -> "${anchor.year}年"
+                else -> ""
+            }
+            val canGoNextPeriod = when (range) {
+                StatsRange.Week, StatsRange.Month, StatsRange.Year -> periodEnd.isBefore(today)
+                else -> false
+            }
+
             StatsUiState(
                 range = range,
                 daily = aggDaily,
                 sleeps = aggSleeps,
-                exercises = exercises.sortedByDescending { it.startEpochMs },
+                exercises = detailExercises,
                 calendarMonth = calendarMonth,
                 calendarDays = buildCalendarDays(calendarMonth, calendar, zone),
                 historyMonths = historyMonths,
                 selectedDay = buildDayDetail(selectedDate, calendar, zone),
                 xLabels = xLabels,
                 dayExtras = dayExtras,
+                periodLabel = periodLabel,
+                canGoNextPeriod = canGoNextPeriod,
+                sleepSummaries = sleepSummaries,
+                longTermTrend = longTermTrend,
+                localAssociations = localAssociations,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StatsUiState())
@@ -342,18 +419,79 @@ class StatsViewModel(
     }
 
     private fun aggregateSleep(date: LocalDate, items: List<SleepSession>, zone: ZoneId): SleepSession {
-        val size = items.size.coerceAtLeast(1)
         val ms = date.atStartOfDay(zone).toInstant().toEpochMilli()
+        // 修复「一个月 15 小时」: 同一晚可能有多条记录 (多数据源 / 小睡 / 碎片),
+        // 旧逻辑把它们全部累加再除以条数, 一旦某晚多条记录就会把均值抬高甚至失真。
+        // 现在: ① 先过滤掉单条 <=0 或 >16h 的脏记录; ② 按「睡眠归属日」分组, 每晚只取最长的一条主睡眠;
+        // ③ 再对各晚主睡眠取平均, 得到「平均每晚睡眠」, 物理上不可能再超过 16h。
+        val perNight = primarySleeps(items, zone, date)
+
+        if (perNight.isEmpty()) {
+            return SleepSession(
+                id = date.toString(),
+                startEpochMs = ms,
+                endEpochMs = ms,
+                totalMinutes = 0,
+                deepMinutes = 0,
+                lightMinutes = 0,
+                remMinutes = 0,
+                awakeMinutes = 0,
+                sleepScore = null,
+                source = "Empty",
+            )
+        }
+        val n = perNight.size
+        val scores = perNight.mapNotNull { it.sleepScore }
         return SleepSession(
             id = date.toString(),
             startEpochMs = ms,
             endEpochMs = ms,
-            totalMinutes = items.sumOf { it.totalMinutes } / size,
-            deepMinutes = items.sumOf { it.deepMinutes } / size,
-            lightMinutes = items.sumOf { it.lightMinutes } / size,
-            remMinutes = items.sumOf { it.remMinutes } / size,
-            awakeMinutes = items.sumOf { it.awakeMinutes } / size,
-            source = items.firstOrNull()?.source ?: "Aggregated"
+            totalMinutes = perNight.sumOf { it.totalMinutes } / n,
+            deepMinutes = perNight.sumOf { it.deepMinutes } / n,
+            lightMinutes = perNight.sumOf { it.lightMinutes } / n,
+            remMinutes = perNight.sumOf { it.remMinutes } / n,
+            awakeMinutes = perNight.sumOf { it.awakeMinutes } / n,
+            sleepScore = scores.takeIf { it.isNotEmpty() }?.average()?.roundToInt(),
+            source = perNight.firstOrNull()?.source ?: "Aggregated",
+        )
+    }
+
+    private fun sleepItemsForGrid(
+        range: StatsRange,
+        gridDate: LocalDate,
+        sleeps: List<SleepSession>,
+        zone: ZoneId,
+    ): List<SleepSession> = sleeps.filter {
+        val date = sleepDisplayDate(it, zone) ?: return@filter false
+        when (range) {
+            StatsRange.Day, StatsRange.Week, StatsRange.Month, StatsRange.All -> date == gridDate
+            StatsRange.Year -> date.withDayOfMonth(1) == gridDate
+        }
+    }
+
+    private fun primarySleeps(
+        items: List<SleepSession>,
+        zone: ZoneId,
+        fallbackDate: LocalDate? = null,
+    ): List<SleepSession> =
+        items
+            .filter { it.totalMinutes in 1L..(16L * 60L) }
+            .groupBy { sleepDisplayDate(it, zone) ?: fallbackDate }
+            .mapNotNull { (_, nightSessions) -> nightSessions.maxByOrNull { it.totalMinutes } }
+
+    private fun buildSleepSummary(
+        date: LocalDate,
+        items: List<SleepSession>,
+        zone: ZoneId,
+    ): StatsSleepSummary {
+        val nights = primarySleeps(items, zone, date)
+        val scores = nights.mapNotNull { it.sleepScore?.takeIf { score -> score > 0 } }
+        return StatsSleepSummary(
+            date = date,
+            avgMinutes = if (nights.isEmpty()) 0L else nights.sumOf { it.totalMinutes } / nights.size,
+            nightsTracked = nights.size,
+            goalNights = nights.count { it.totalMinutes >= 7L * 60L },
+            avgScore = scores.takeIf { it.isNotEmpty() }?.average()?.roundToInt(),
         )
     }
 
@@ -385,11 +523,13 @@ class StatsViewModel(
         val rangeDays = (ChronoUnit.DAYS.between(fromDate, toDate).toInt() + 1).coerceAtLeast(1)
         // 复用 Month 聚合: 步数/距离/卡路里求和, 心率取均值。
         val agg = aggregateDaily(StatsRange.Month, toDate, dItems)
-        val sItems = sleeps.filter {
-            it.totalMinutes > 0 &&
-                sleepDisplayDate(it, zone)?.inRange() == true
-        }
-        val sleepAvg = if (sItems.isEmpty()) 0L else sItems.sumOf { it.totalMinutes } / sItems.size
+        // 与 aggregateSleep 一致: 每晚只取最长主睡眠 (过滤 >16h 脏数据 + 同晚多源去重), 再求平均。
+        val nightlySessions = primarySleeps(
+            sleeps.filter { sleepDisplayDate(it, zone)?.inRange() == true },
+            zone,
+        )
+        val sleepAvg = if (nightlySessions.isEmpty()) 0L
+            else nightlySessions.sumOf { it.totalMinutes } / nightlySessions.size
         val eItems = exercises.filter {
             runCatching { Instant.ofEpochMilli(it.startEpochMs).atZone(zone).toLocalDate() }.getOrNull()?.inRange() == true
         }
@@ -421,8 +561,8 @@ class StatsViewModel(
                 .takeIf { it.isNotEmpty() }
                 ?.average()
                 ?.roundToInt(),
-            sleepNights = sItems.size,
-            avgSleepScore = sItems.mapNotNull { it.sleepScore?.takeIf { value -> value > 0 } }
+            sleepNights = nightlySessions.size,
+            avgSleepScore = nightlySessions.mapNotNull { it.sleepScore?.takeIf { value -> value > 0 } }
                 .takeIf { it.isNotEmpty() }
                 ?.average()
                 ?.roundToInt(),
@@ -496,9 +636,8 @@ class StatsViewModel(
             val date = runCatching { Instant.ofEpochMilli(it.startEpochMs).atZone(zone).toLocalDate() }.getOrNull()
                 ?: return@filter false
             when (range) {
-                StatsRange.Day, StatsRange.Week, StatsRange.All -> date == gridDate
-                StatsRange.Month -> date.withDayOfMonth(1) == gridDate
-                StatsRange.Year -> date.withDayOfYear(1) == gridDate
+                StatsRange.Day, StatsRange.Week, StatsRange.Month, StatsRange.All -> date == gridDate
+                StatsRange.Year -> date.withDayOfMonth(1) == gridDate
             }
         }
 
@@ -578,7 +717,36 @@ class StatsViewModel(
         )
     }
 
-    fun setRange(range: StatsRange) { _range.value = range }
+    fun setRange(range: StatsRange) {
+        _range.value = range
+        // 切粒度时把周期锚点拉回今天, 默认看最新一周/月/年。
+        _anchor.value = LocalDate.now()
+    }
+
+    /** 图表往前翻一个周期 (上一周 / 上一月 / 上一年)。 */
+    fun previousPeriod() {
+        _anchor.value = when (_range.value) {
+            StatsRange.Week -> _anchor.value.minusWeeks(1)
+            StatsRange.Month -> _anchor.value.minusMonths(1)
+            StatsRange.Year -> _anchor.value.minusYears(1)
+            else -> _anchor.value
+        }
+    }
+
+    /** 图表往后翻一个周期, 不超过今天所在周期。 */
+    fun nextPeriod() {
+        val today = LocalDate.now()
+        val next = when (_range.value) {
+            StatsRange.Week -> _anchor.value.plusWeeks(1)
+            StatsRange.Month -> _anchor.value.plusMonths(1)
+            StatsRange.Year -> _anchor.value.plusYears(1)
+            else -> _anchor.value
+        }
+        if (!next.isAfter(today)) _anchor.value = next
+    }
+
+    /** 图表回到今天所在周期。 */
+    fun jumpPeriodToToday() { _anchor.value = LocalDate.now() }
 
     fun previousCalendarMonth() {
         _calendarMonth.value = _calendarMonth.value.minusMonths(1)
@@ -616,6 +784,7 @@ class StatsViewModel(
         val weekStart: DayOfWeek,
         val calendarMonth: YearMonth,
         val selectedDate: LocalDate,
+        val anchor: LocalDate,
     )
 
     private data class ChartSource(
@@ -628,6 +797,14 @@ class StatsViewModel(
         val daily: List<DailyHealthSnapshot>,
         val sleeps: List<SleepSession>,
         val exercises: List<ExerciseSession>,
+    )
+
+    private data class LifestyleSource(
+        val habits: List<HabitDefinition>,
+        val checkIns: List<HabitCheckIn>,
+        val moods: List<MoodEntry>,
+        val cycles: List<CycleEntry>,
+        val weather: List<WeatherEntry>,
     )
 
     private fun buildHistoryMonths(

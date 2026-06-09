@@ -30,6 +30,10 @@ class BackupManager(
                 bodyBattery = db.bodyBatteryDao().all(),
                 garminRaw = db.garminRawDao().all(),
                 cycle = db.cycleDao().all(),
+                moods = db.moodDao().all(),
+                habits = db.habitDao().allHabits(),
+                habitCheckIns = db.habitDao().allCheckIns(),
+                weather = db.weatherDao().all(),
                 syncMarkers = db.syncMarkerDao().all(),
             )
             val text = json.encodeToString(BackupEnvelope.serializer(), envelope)
@@ -51,6 +55,10 @@ class BackupManager(
             if (envelope.bodyBattery.isNotEmpty()) db.bodyBatteryDao().upsertAll(envelope.bodyBattery)
             if (envelope.garminRaw.isNotEmpty()) db.garminRawDao().upsertAll(envelope.garminRaw)
             if (envelope.cycle.isNotEmpty()) db.cycleDao().upsertAll(envelope.cycle)
+            if (envelope.moods.isNotEmpty()) db.moodDao().upsertAll(envelope.moods)
+            if (envelope.habits.isNotEmpty()) db.habitDao().upsertHabits(envelope.habits)
+            if (envelope.habitCheckIns.isNotEmpty()) db.habitDao().upsertCheckIns(envelope.habitCheckIns)
+            if (envelope.weather.isNotEmpty()) db.weatherDao().upsertAll(envelope.weather)
             envelope.syncMarkers.forEach { db.syncMarkerDao().upsert(it) }
             envelope
         }.getOrNull()
