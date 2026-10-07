@@ -1,52 +1,58 @@
 # Vita
 
-Vita 是一个 Android 个人健康记录应用。健康、运动、睡眠、周期、情绪与习惯数据保存在手机本地，支持 Garmin、Health Connect 和 Apple 健康导出文件。
+**把运动、睡眠与日常状态放在一起，看见健康的长期变化。**
 
-代码公开在 [charlotteamian/Vita](https://github.com/charlotteamian/Vita)，安装包在 [GitHub Releases](https://github.com/charlotteamian/Vita/releases/latest)。仓库包含应用源码、数据库迁移、测试与可选的 Mac AI 服务，不包含个人健康数据、账号凭据或签名私钥。
+Vita 是一款 Android 健康与生活记录应用，整合多种来源的健康数据，也支持记录情绪、周期和习惯。常规记录与统计在手机本地处理，通过每日总览、历史图表和趋势分析，让分散的数据更容易理解。
+
+[下载最新版](https://github.com/charlotteamian/Vita/releases/latest) · [查看版本记录](https://github.com/charlotteamian/Vita/releases) · [开发与发布指南](docs/releases.md)
+
+## 主要功能
+
+| 页面 | 可以做什么 |
+|---|---|
+| **今日** | 查看步数、运动、睡眠、心率等当天指标，自定义首页显示项目；查看压力、身体电量等动态变化，以及基于历史数据的状态参考。 |
+| **记录** | 记录一天中的多次情绪与备注，管理周期记录；建立习惯、补打卡，并查看连续记录与徽章。 |
+| **数据** | 按日、周、月、年或全部历史查看统计，使用数据日历回看某一天；查看运动与睡眠详情，编辑运动标题、分类与备注。 |
+| **趋势** | 回顾较长周期的健康变化，按需生成 AI 趋势分析，并保留已生成的结果。 |
+
+- **多来源整合**：支持 Garmin 同步、Health Connect 读取与 Apple 健康文件导入。
+- **历史回看**：查看睡眠、运动、心率、压力、身体电量、血氧等数据与曲线；可获取的指标取决于数据来源。
+- **本地备份**：通过 JSON 导出、导入健康与生活记录，自行选择备份保存位置。
+- **记录提醒**：在设置中选择提醒时刻，及时记录当天心情。
+- **可选 AI 洞察**：在设置中配置模型服务，按需分析当天状态或长期趋势。
+- **应用内更新**：在设置中检查 GitHub 新版本，下载并校验安装包，再由 Android 系统确认安装。
+
+## 数据从哪里来
+
+| 来源 | 接入方式 |
+|---|---|
+| **Garmin** | 支持国际区与中国区账号同步，可选择增量或历史时间范围。 |
+| **Health Connect** | 读取已获得授权的健康记录；Samsung Health、Mi Fitness、Fitbit 等来源需先将数据写入 Health Connect。 |
+| **Apple 健康** | 导入导出的 ZIP 或 XML 文件，用于回看历史记录。 |
+| **手动记录** | 补充情绪、周期、习惯，以及运动的标题、分类和备注。 |
+
+实际可获取的健康指标取决于设备、账号、服务地区和授权状态。
 
 ## 安装与更新
 
-第一次从 GitHub 更新时，在 Releases 下载 `Vita-版本.apk`，直接覆盖安装已有 Vita。**不要先卸载，也不要清除应用数据。** 建议先在旧应用设置页导出一份 JSON 备份；该备份包含健康记录，不包含登录凭据和应用设置。
+支持 **Android 9 及以上**。在 [GitHub Releases](https://github.com/charlotteamian/Vita/releases/latest) 下载 `Vita-版本.apk` 并安装；Health Connect 的可用性取决于 Android 版本与设备支持。
 
-安装这个版本后，可在 **设置 → 检查更新** 获取后续 GitHub 版本，由应用下载、校验安装包，再交给 Android 系统确认安装。首次安装可能需要允许当前安装来源安装应用。
+已有 Vita 的用户直接覆盖安装，**不要先卸载或清除应用数据**。更新前可在设置中导出 JSON 备份；备份包含健康与生活记录，不包含账号凭据和应用设置。
 
-发布包使用 `personal` 构建类型，保持已有安装的身份：
+安装后，在 **设置 → 检查更新** 获取后续版本。应用会显示版本说明与下载进度，校验完成后打开系统安装器；首次使用可能需要按提示允许 Vita 安装应用。
 
-| 项目 | 固定值 |
-|---|---|
-| 应用包名 | `com.vita.healthtracker.debug` |
-| 可调试 | `false` |
-| 签名证书 SHA-256 | `71b7801a44bd4ee9227e4c0e97e40c5b4b9432db68622a18c0aa58e65c7bb048` |
+## 数据与隐私
 
-`.debug` 是既有应用的包名组成部分，发布包仍保持这个包名和原证书，才能原地更新并保留数据。普通 `debug` 构建仅供开发检查，不用于发布或覆盖已有手机应用。
+常规健康与生活记录保存在手机本地。GitHub 仓库公开应用源码与测试，不包含个人健康数据、账号凭据、AI Key 或签名私钥。
 
-## 直接在 GitHub 修改和发布
+AI 分析是可选功能。主动请求分析时，健康摘要与情绪备注会发送到设置中选择的模型服务；可选的 Mac 服务也会将请求交给对应的模型后端。数据处理方式、费用与额度取决于所选服务和账号，详见 [Mac AI 服务说明](ai-server/README.md)。
 
-1. 在 GitHub 网页编辑代码并提交到主分支。
-2. 编辑根目录 `version.properties`，同时递增 `versionCode` 和 `versionName`。当前为 `2` / `0.2.0`。
-3. 等待 **Android CI** 通过，再进入 **Actions → Publish Android update → Run workflow**。也可推送与版本一致的 `v版本` 标签。
-4. 发布流程检查签名和版本后，生成 APK、`release-manifest.json`、`SHA256SUMS`，上传到 Releases。手机即可检查到新版本。
+## 开发与发布
 
-完整操作、签名恢复和验证边界见 [发布说明](docs/releases.md)。
-
-## 本地开发
-
-使用 Android Studio 打开项目，或使用 JDK 17、Android SDK 35 和项目自带 Gradle wrapper：
+项目使用 Kotlin、Jetpack Compose、Room 和 WorkManager。使用 Android Studio 打开项目，或使用 JDK 17、Android SDK 35 和项目自带的 Gradle wrapper：
 
 ```bash
 ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-构建可覆盖现有安装的包，需要原签名私钥：
-
-```bash
-./gradlew :app:testPersonalUnitTest :app:lintPersonal :app:assemblePersonal
-```
-
-本机默认从 `~/.android/debug.keystore` 读取既有密钥；换电脑必须恢复原密钥，也可用 `VITA_SIGNING_KEYSTORE_PATH` 指定位置。构建会拒绝证书不一致的密钥。
-
-## 数据与 AI
-
-常规健康记录与统计在手机本地处理。启用并请求 AI 分析时，会把健康摘要和情绪备注发送到设置中选定的 AI 服务；Mac 服务也会把请求交给其 CLI 后端对应的模型服务。服务端数据处理、费用与额度取决于所选服务和账号。详情见 [Mac AI 服务说明](ai-server/README.md)。
-
-当前 Room 数据库版本为 16，升级必须提供迁移，禁止通过清库兜底。构建与自动检查不能替代真机覆盖安装及数据保留验证。
+支持直接在 GitHub 网页修改源码，再通过 GitHub Actions 构建并发布更新。版本管理、签名维护、数据库迁移与验证说明见 [开发与发布指南](docs/releases.md)。
