@@ -2,6 +2,8 @@ package com.vita.healthtracker.domain
 
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
 import com.vita.healthtracker.data.local.entity.SleepSession
+import java.time.Instant
+import java.time.ZoneId
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -47,7 +49,9 @@ object ReadinessEngine {
      * @param today         当日聚合快照
      * @param lastSleep     当日对应的「昨夜」睡眠 (可空)
      * @param baselineDaily 评估日之前最近若干天的日快照 (不含当日)
-     * @param baselineSleep 同期睡眠会话 (用于睡眠时长基线)
+     * @param baselineSleep 同期睡眠会话 (用于睡眠时长基线; 内部会按晚去重、剔除脏数据并排除评估当晚)
+     * @param zone          解析睡眠归属日所用时区
+     * @param monthTrend    近 30 天 vs 上个 30 天的中期趋势 (可空; 供洞察判断「单日波动 vs 持续走弱」)
      * @return 无任何可评分维度时返回 null
      */
     fun evaluate(
@@ -56,11 +60,13 @@ object ReadinessEngine {
         lastSleep: SleepSession?,
         baselineDaily: List<DailyHealthSnapshot>,
         baselineSleep: List<SleepSession>,
+        zone: ZoneId = ZoneId.systemDefault(),
+        monthTrend: TrendReport? = null,
     ): StatusScore? {
         if (today == null && lastSleep == null) return null
 
         // 基线只用评估日之前的数据 (防止当日值污染自身基线)。
-        val priorDaily = baselineDaily.filter { it.date < date }
+        val priorDaily = baselineDaily.filter { it.date < date }.sortedBy { it.date }
 
         val hrvBase = baselineOf(priorDaily) { it.hrv?.takeIf { v -> v > 0 }?.toDouble() }
         val rhrBase = baselineOf(priorDaily) { it.restingHeartRate?.takeIf { v -> v > 0 }?.toDouble() }
@@ -68,9 +74,18 @@ object ReadinessEngine {
         val spo2Base = baselineOf(priorDaily) { it.avgSpo2?.takeIf { v -> v > 0 }?.toDouble() }
         val stressBase = baselineOf(priorDaily) { it.avgStress?.takeIf { v -> v > 0 }?.toDouble() }
         val bbBase = baselineOf(priorDaily) { it.bodyBatteryHigh?.takeIf { v -> v > 0 }?.toDouble() }
-        val sleepMinBase = baselineOf(
-            baselineSleep.filter { it.totalMinutes > 0 }.map { it.totalMinutes.toDouble() }
-        )
+        // 睡眠基线: 每晚只取最长一条主睡眠 (排除小睡/碎片/重复来源), 剔除 >16h 脏记录,
+        // 且只用评估日之前的夜晚 (当晚由 lastSleep 单独参与评分, 不污染自身基线)。
+        val priorNights = primaryNightMinutes(baselineSleep, zone).filter { it.first < date }
+        val sleepMinBase = baselineOf(priorNights.map { it.second })
+
+        // 连续偏离天数: 今天与基线偏差超过 0.5 SD, 且往前每天都同向偏离, 用于区分单日波动与持续走弱。
+        fun streakOf(
+            todayValue: Double,
+            base: Baseline?,
+            higherBetter: Boolean,
+            selector: (DailyHealthSnapshot) -> Double?,
+        ): Int = consecutiveBadDays(todayValue, base, higherBetter, priorDaily.asReversed().asSequence().map { selector(it)?.takeIf { v -> v > 0 } })
 
         val contributions = mutableListOf<MetricContribution>()
 
@@ -84,6 +99,7 @@ object ReadinessEngine {
                     valueText = "$hrv ms",
                     delta = deltaText(hrv.toDouble(), hrvBase.recentMean, "ms", oneDecimal = false),
                     deltaFromRecent = recentDelta(hrv.toDouble(), hrvBase.recentMean),
+                    streakDays = streakOf(hrv.toDouble(), hrvBase, higherBetter = true) { it.hrv?.toDouble() },
                 )
             }
         }
@@ -100,6 +116,7 @@ object ReadinessEngine {
                 valueText = "$rhr bpm",
                 delta = rhrBase?.let { deltaText(rhr.toDouble(), it.recentMean, "bpm", oneDecimal = false) },
                 deltaFromRecent = rhrBase?.let { recentDelta(rhr.toDouble(), it.recentMean) },
+                streakDays = streakOf(rhr.toDouble(), rhrBase, higherBetter = false) { it.restingHeartRate?.toDouble() },
             )
         }
 
@@ -113,6 +130,7 @@ object ReadinessEngine {
                     valueText = "%.1f 次/分".format(resp),
                     delta = deltaText(resp, respBase.recentMean, "次/分", oneDecimal = true),
                     deltaFromRecent = recentDelta(resp, respBase.recentMean),
+                    streakDays = streakOf(resp, respBase, higherBetter = false) { it.avgRespiration },
                 )
             }
         }
@@ -128,6 +146,7 @@ object ReadinessEngine {
                 subScore = sub,
                 valueText = "$spo2 %",
                 delta = null,
+                streakDays = streakOf(spo2.toDouble(), spo2Base, higherBetter = true) { it.avgSpo2?.toDouble() },
             )
         }
 
@@ -145,6 +164,12 @@ object ReadinessEngine {
                 deltaFromRecent = sleepMinBase?.let {
                     recentDelta(lastSleep.totalMinutes.toDouble(), it.recentMean)
                 },
+                streakDays = consecutiveBadDays(
+                    todayValue = lastSleep.totalMinutes.toDouble(),
+                    base = sleepMinBase,
+                    higherBetter = true,
+                    priorValuesDesc = priorNights.asReversed().asSequence().map { it.second },
+                ),
             )
         }
 
@@ -160,6 +185,7 @@ object ReadinessEngine {
                 valueText = "$stress",
                 delta = stressBase?.let { deltaText(stress.toDouble(), it.recentMean, "", oneDecimal = false) },
                 deltaFromRecent = stressBase?.let { recentDelta(stress.toDouble(), it.recentMean) },
+                streakDays = streakOf(stress.toDouble(), stressBase, higherBetter = false) { it.avgStress?.toDouble() },
             )
         }
 
@@ -172,6 +198,7 @@ object ReadinessEngine {
                 valueText = "$bb",
                 delta = bbBase?.let { deltaText(bb.toDouble(), it.recentMean, "", oneDecimal = false) },
                 deltaFromRecent = bbBase?.let { recentDelta(bb.toDouble(), it.recentMean) },
+                streakDays = streakOf(bb.toDouble(), bbBase, higherBetter = true) { it.bodyBatteryHigh?.toDouble() },
             )
         }
 
@@ -200,10 +227,9 @@ object ReadinessEngine {
             overall = overall,
             band = band,
             contributions = contributions,
-            hrvBase = hrvBase,
-            today = today,
             confidence = confidence,
             limits = limits,
+            monthTrend = monthTrend,
         )
 
         return StatusScore(
@@ -283,6 +309,7 @@ object ReadinessEngine {
         valueText: String,
         delta: String?,
         deltaFromRecent: Double? = null,
+        streakDays: Int = 0,
     ) = MetricContribution(
         metric = metric,
         label = metric.label,
@@ -291,7 +318,51 @@ object ReadinessEngine {
         valueText = valueText,
         deltaText = delta,
         deltaFromRecent = deltaFromRecent,
+        streakDays = streakDays,
     )
+
+    /**
+     * 每晚主睡眠时长 (分钟), 键为归属日 yyyy-MM-dd, 按日期升序。
+     * 同一晚多条记录 (多来源/小睡/碎片) 只取最长一条; 单条 ≤0 或 >16h 视作脏数据剔除。
+     */
+    private fun primaryNightMinutes(sleeps: List<SleepSession>, zone: ZoneId): List<Pair<String, Double>> =
+        sleeps.asSequence()
+            .filter { it.totalMinutes in 1..(16L * 60L) }
+            .mapNotNull { sleep ->
+                runCatching {
+                    val end = Instant.ofEpochMilli(sleep.endEpochMs).atZone(zone).toLocalDate()
+                    val start = Instant.ofEpochMilli(sleep.startEpochMs).atZone(zone).toLocalDate()
+                    (if (sleep.endEpochMs > sleep.startEpochMs) end else start).toString() to sleep
+                }.getOrNull()
+            }
+            .groupBy({ it.first }, { it.second })
+            .map { (night, sessions) -> night to sessions.maxOf { it.totalMinutes }.toDouble() }
+            .sortedBy { it.first }
+
+    /**
+     * 今天偏离基线超过 0.5 SD 时, 往前数同向偏离的连续天数 (含今天)。
+     * 中途缺数据即中断, 宁可低估也不虚报「连续 N 天」。
+     */
+    private fun consecutiveBadDays(
+        todayValue: Double,
+        base: Baseline?,
+        higherBetter: Boolean,
+        priorValuesDesc: Sequence<Double?>,
+    ): Int {
+        if (base == null || base.n < MIN_BASELINE_DAYS) return 0
+        val sd = base.sd.coerceAtLeast(abs(base.mean) * MIN_CV).coerceAtLeast(1e-6)
+        fun isBad(value: Double): Boolean {
+            val deviation = if (higherBetter) base.mean - value else value - base.mean
+            return deviation >= 0.5 * sd
+        }
+        if (!isBad(todayValue)) return 0
+        var streak = 1
+        for (value in priorValuesDesc) {
+            if (value == null || !isBad(value)) break
+            streak++
+        }
+        return streak
+    }
 
     /** z 分数 → 子分。偏离基线 1 个标准差 ±14 分, 截断到合理范围。 */
     private fun normalizedSub(value: Double, base: Baseline, higherBetter: Boolean): Int {
@@ -451,6 +522,7 @@ data class MetricContribution(
     val valueText: String,    // 原始值展示
     val deltaText: String?,   // 相对 7 日均值的趋势 (可空)
     val deltaFromRecent: Double? = null, // 结构化偏离值, 用于判断变化是否值得展示
+    val streakDays: Int = 0,  // 含今天的连续偏离天数 (>0.5 SD); 0 = 今天没有明显偏离
 )
 
 /** 状态分档位。 */

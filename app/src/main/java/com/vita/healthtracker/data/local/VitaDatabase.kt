@@ -2,6 +2,7 @@ package com.vita.healthtracker.data.local
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import com.vita.healthtracker.data.local.dao.CustomMoodDao
 import com.vita.healthtracker.data.local.dao.CycleDao
 import com.vita.healthtracker.data.local.dao.BodyBatteryDao
 import com.vita.healthtracker.data.local.dao.DailyHealthDao
@@ -13,6 +14,7 @@ import com.vita.healthtracker.data.local.dao.MoodDao
 import com.vita.healthtracker.data.local.dao.SleepDao
 import com.vita.healthtracker.data.local.dao.SyncMarkerDao
 import com.vita.healthtracker.data.local.dao.WeatherDao
+import com.vita.healthtracker.data.local.entity.CustomMood
 import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.BodyBatterySample
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
@@ -38,10 +40,11 @@ import com.vita.healthtracker.data.local.entity.WeatherEntry
         HabitDefinition::class,
         HabitCheckIn::class,
         MoodEntry::class,
+        CustomMood::class,
         WeatherEntry::class,
         SyncMarker::class,
     ],
-    version = 11,
+    version = 16,
     exportSchema = true,
 )
 abstract class VitaDatabase : RoomDatabase() {
@@ -54,6 +57,7 @@ abstract class VitaDatabase : RoomDatabase() {
     abstract fun garminRawDao(): GarminRawDao
     abstract fun habitDao(): HabitDao
     abstract fun moodDao(): MoodDao
+    abstract fun customMoodDao(): CustomMoodDao
     abstract fun weatherDao(): WeatherDao
     abstract fun syncMarkerDao(): SyncMarkerDao
 }

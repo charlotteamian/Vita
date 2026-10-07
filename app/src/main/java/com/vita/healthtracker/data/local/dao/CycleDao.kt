@@ -22,9 +22,6 @@ interface CycleDao {
     @Query("SELECT * FROM cycle_entry ORDER BY date DESC")
     fun allDescFlow(): Flow<List<CycleEntry>>
 
-    @Query("SELECT * FROM cycle_entry WHERE isPeriodStart = 1 ORDER BY date DESC")
-    suspend fun periodStarts(): List<CycleEntry>
-
     @Query("SELECT * FROM cycle_entry WHERE date BETWEEN :from AND :to ORDER BY date")
     fun rangeFlow(from: String, to: String): Flow<List<CycleEntry>>
 

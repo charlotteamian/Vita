@@ -5,14 +5,19 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vita.healthtracker.data.ai.DirectApiInsightProvider
 import com.vita.healthtracker.data.backup.BackupManager
 import com.vita.healthtracker.data.healthconnect.HealthConnectManager
 import com.vita.healthtracker.data.prefs.SettingsPreferences
+import com.vita.healthtracker.data.reminder.ReminderScheduler
 import com.vita.healthtracker.data.repository.CycleRepository
 import com.vita.healthtracker.data.repository.HealthRepository
 import com.vita.healthtracker.data.sensor.StepSensorManager
+import com.vita.healthtracker.data.weather.WeatherSyncManager
+import com.vita.healthtracker.data.update.AppUpdateManager
 import com.vita.healthtracker.domain.HomeMetric
 import java.time.DayOfWeek
+import java.time.LocalTime
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,6 +33,18 @@ data class SettingsUiState(
     val homeMetrics: Set<String> = HomeMetric.DEFAULT_KEYS,
     val phoneStepSensorAvailable: Boolean = false,
     val phoneStepSensorRunning: Boolean = false,
+    val aiServerAddress: String = "",
+    val aiServerToken: String = "",
+    val aiMode: String = SettingsPreferences.AI_MODE_LAN,
+    val aiApiPreset: String = "deepseek",
+    val aiApiBaseUrl: String = "",
+    val aiApiKey: String = "",
+    val aiApiModel: String = "",
+    val aiApiTesting: Boolean = false,
+    val aiApiTestResult: String? = null,
+    val weatherAutoEnabled: Boolean = false,
+    val reminderEnabled: Boolean = false,
+    val reminderTimes: List<LocalTime> = emptyList(),
 )
 
 class SettingsViewModel(
@@ -37,10 +54,20 @@ class SettingsViewModel(
     private val backupManager: BackupManager,
     private val prefs: SettingsPreferences,
     private val stepSensorManager: StepSensorManager,
+    private val weatherSyncManager: WeatherSyncManager,
+    private val reminderScheduler: ReminderScheduler,
+    private val directApiProvider: DirectApiInsightProvider,
+    private val appUpdateManager: AppUpdateManager,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
+    val updateState = appUpdateManager.state
+
+    fun checkForAppUpdate() = appUpdateManager.checkForUpdate()
+    fun downloadAppUpdate() = appUpdateManager.downloadUpdate()
+    fun installAppUpdate() = appUpdateManager.installDownloadedUpdate()
+    fun reportUpdateInstallerUnavailable() = appUpdateManager.reportInstallerUnavailable()
 
     init {
         refreshStatus()
@@ -50,6 +77,109 @@ class SettingsViewModel(
         }
         viewModelScope.launch {
             prefs.homeMetrics.collect { metrics -> _state.value = _state.value.copy(homeMetrics = metrics) }
+        }
+        viewModelScope.launch {
+            prefs.aiServerAddress.collect { addr -> _state.value = _state.value.copy(aiServerAddress = addr) }
+        }
+        viewModelScope.launch {
+            prefs.aiServerToken.collect { token -> _state.value = _state.value.copy(aiServerToken = token) }
+        }
+        viewModelScope.launch {
+            prefs.aiMode.collect { mode -> _state.value = _state.value.copy(aiMode = mode) }
+        }
+        viewModelScope.launch {
+            prefs.aiApiPreset.collect { id -> _state.value = _state.value.copy(aiApiPreset = id) }
+        }
+        viewModelScope.launch {
+            prefs.aiApiBaseUrl.collect { url -> _state.value = _state.value.copy(aiApiBaseUrl = url) }
+        }
+        viewModelScope.launch {
+            prefs.aiApiKey.collect { key -> _state.value = _state.value.copy(aiApiKey = key) }
+        }
+        viewModelScope.launch {
+            prefs.aiApiModel.collect { model -> _state.value = _state.value.copy(aiApiModel = model) }
+        }
+        viewModelScope.launch {
+            prefs.weatherAutoEnabled.collect { on -> _state.value = _state.value.copy(weatherAutoEnabled = on) }
+        }
+        viewModelScope.launch {
+            prefs.reminderEnabled.collect { on -> _state.value = _state.value.copy(reminderEnabled = on) }
+        }
+        viewModelScope.launch {
+            prefs.reminderTimes.collect { times -> _state.value = _state.value.copy(reminderTimes = times) }
+        }
+    }
+
+    /** 开关天气自动获取; 开启后立即尝试拉一次 (权限/位置在 manager 内部自检)。 */
+    fun setWeatherAutoEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            prefs.setWeatherAutoEnabled(enabled)
+            if (enabled) weatherSyncManager.refreshIfEnabled()
+        }
+    }
+
+    fun setReminderEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            prefs.setReminderEnabled(enabled)
+            reminderScheduler.reschedule()
+        }
+    }
+
+    fun toggleReminderTime(time: LocalTime) {
+        viewModelScope.launch {
+            val current = _state.value.reminderTimes
+            val next = if (time in current) current - time else current + time
+            // 至少保留一个时刻, 否则开关开着却没提醒。
+            if (next.isEmpty()) {
+                _state.value = _state.value.copy(message = "至少保留一个提醒时刻")
+                return@launch
+            }
+            prefs.setReminderTimes(next.sorted())
+            reminderScheduler.reschedule()
+        }
+    }
+
+    fun setAiServerAddress(address: String) {
+        viewModelScope.launch { prefs.setAiServerAddress(address) }
+    }
+
+    fun setAiServerToken(token: String) {
+        viewModelScope.launch { prefs.setAiServerToken(token) }
+    }
+
+    fun setAiMode(mode: String) {
+        viewModelScope.launch { prefs.setAiMode(mode) }
+    }
+
+    /** 切换服务商预设: 清掉上一家的地址/模型覆盖 (Key 保留, 填错会得到明确的 401)。 */
+    fun setAiApiPreset(id: String) {
+        viewModelScope.launch {
+            prefs.setAiApiPreset(id)
+            prefs.setAiApiBaseUrl("")
+            prefs.setAiApiModel("")
+            _state.value = _state.value.copy(aiApiTestResult = null)
+        }
+    }
+
+    fun saveAiApiConfig(baseUrl: String, key: String, model: String) {
+        viewModelScope.launch {
+            prefs.setAiApiBaseUrl(baseUrl)
+            prefs.setAiApiKey(key)
+            prefs.setAiApiModel(model)
+        }
+    }
+
+    /** 保存当前填写的 API 配置并发一个最小请求验证连通性。 */
+    fun saveAndTestAiApi(baseUrl: String, key: String, model: String) {
+        if (_state.value.aiApiTesting) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(aiApiTesting = true, aiApiTestResult = null)
+            prefs.setAiApiBaseUrl(baseUrl)
+            prefs.setAiApiKey(key)
+            prefs.setAiApiModel(model)
+            val result = runCatching { directApiProvider.testConnection() }
+                .getOrElse { e -> e.message ?: "连接失败" }
+            _state.value = _state.value.copy(aiApiTesting = false, aiApiTestResult = result)
         }
     }
 

@@ -21,8 +21,6 @@ class CycleRepository(
 
     fun observeAll(): Flow<List<CycleEntry>> = dao.allDescFlow()
 
-    suspend fun getAll(): List<CycleEntry> = dao.all()
-
     fun observeRange(from: LocalDate, to: LocalDate): Flow<List<CycleEntry>> =
         dao.rangeFlow(from.format(fmt), to.format(fmt))
 
@@ -57,8 +55,6 @@ class CycleRepository(
         }
     }
 
-    suspend fun delete(date: String) = dao.deleteForDate(date)
-
     /**
      * 外部导入 (Apple / Garmin / HC) 只补充周期数据, 不覆盖用户在 Vita 里手动改过的日期。
      * 这和运动明细里的自定义分类/备注一样, 用户整理过的数据应当稳定保留。
@@ -80,7 +76,10 @@ class CycleRepository(
         if (merged.isNotEmpty()) dao.upsertAll(merged)
     }
 
-    /** 把 Health Connect 月经数据拉进本地. */
+    /**
+     * 把 Health Connect 月经数据拉进本地。
+     * 经由 [upsertExternalPreservingManual] 合并: 手动记录的经量/症状/起始日标记不会被外部数据覆盖。
+     */
     suspend fun syncFromHealthConnect(zone: ZoneId = ZoneId.systemDefault()) {
         if (healthConnect.availability != HealthConnectManager.Availability.Installed) return
         val now = Instant.now()
@@ -107,26 +106,13 @@ class CycleRepository(
         }
         periodRecords.forEach { p ->
             val start = p.startTime.atZone(zone).toLocalDate().format(fmt)
-            byDate[start] = (byDate[start] ?: CycleEntry(start, 2, false)).copy(isPeriodStart = true)
+            byDate[start] = (byDate[start] ?: CycleEntry(start, 2, false, source = "health_connect"))
+                .copy(isPeriodStart = true)
         }
-        if (byDate.isNotEmpty()) dao.upsertAll(byDate.values.toList())
+        upsertExternalPreservingManual(byDate.values.toList())
     }
 
-    /** 基于 [isPeriodStart=true] 的记录估算平均周期长度. */
-    suspend fun averageCycleLength(): Int? {
-        val starts = dao.periodStarts().mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
-            .sorted()
-        if (starts.size < 2) return null
-        val gaps = starts.zipWithNext { a, b -> b.toEpochDay() - a.toEpochDay() }
-        return gaps.average().toInt()
-    }
-
-    /** 推测下一次月经开始日. */
-    suspend fun predictNextPeriodStart(): LocalDate? {
-        val starts = dao.periodStarts().mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
-            .sorted()
-        val last = starts.lastOrNull() ?: return null
-        val avg = averageCycleLength() ?: 28
-        return last.plusDays(avg.toLong())
+    suspend fun delete(date: String) {
+        dao.deleteForDate(date)
     }
 }

@@ -5,7 +5,6 @@ import com.vita.healthtracker.data.local.entity.SleepSession
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -42,14 +41,20 @@ object DailyBriefAnalyzer {
             val pointScore = if (pointDate == date) {
                 score.overall
             } else {
+                // 与当日评分同窗: 每个轨迹点都用各自往前 60 天的基线, 避免历史点用全量
+                // 多年均值、今天却用 60 天均值导致曲线不可比。
+                val windowStart = pointDate.minusDays(60).toString()
                 ReadinessEngine.evaluate(
                     date = pointDate.toString(),
                     today = dailyByDate[pointDate.toString()],
                     lastSleep = sleepByDate[pointDate],
-                    baselineDaily = historyDaily,
+                    baselineDaily = historyDaily.filter { it.date >= windowStart },
                     baselineSleep = historySleep.filter { sleep ->
-                        sleepDisplayDate(sleep, zone)?.isBefore(pointDate) == true
+                        sleepDisplayDate(sleep, zone)?.let {
+                            !it.isBefore(pointDate.minusDays(60)) && it.isBefore(pointDate)
+                        } == true
                     },
+                    zone = zone,
                 )?.overall
             }
             ReadinessPoint(pointDate, pointScore)
@@ -65,26 +70,72 @@ object DailyBriefAnalyzer {
             }
         }
 
-        val reasons = reasons(score)
         return DailyBrief(
-            headline = headline(reasons),
-            observation = observation(score, reasons),
-            action = action(score, reasons),
+            headline = headline(score),
+            observation = observation(score),
+            action = action(score),
             changeText = changeText,
-            reasons = reasons,
             trajectory = trajectory,
+            trajectorySummary = trajectorySummary(trajectory),
             discovery = discovery(date, monthTrend, trajectory, historyDaily, historySleep, zone),
         )
     }
 
-    private fun headline(reasons: List<BriefReason>): String {
-        val lead = reasons.firstOrNull() ?: return "当天可用指标较少"
-        return "${lead.label} ${lead.valueText}，${lead.context}"
+    /** 一句有结论的判断: 先说今天身体怎么样、该用什么节奏, 不在这里报数字 (数字在维度条上)。 */
+    private fun headline(score: StatusScore): String {
+        val leadLimit = score.limits.minByOrNull { it.cap }
+        val weakest = score.contributions.minByOrNull { it.subScore }
+        val driver = when {
+            leadLimit?.metric != null -> driverPhrase(leadLimit.metric)
+            weakest != null && weakest.subScore < 55 -> driverPhrase(weakest.metric)
+            else -> null
+        }
+        return when (score.band) {
+            ReadinessBand.PRIME -> "恢复充分，可以放开安排"
+            ReadinessBand.GOOD -> driver?.let { "整体在线，但$it" } ?: "状态在线，按计划推进就好"
+            ReadinessBand.FAIR -> driver?.let { "$it，今天留点余量" } ?: "略有消耗，安排别排太满"
+            ReadinessBand.LOW -> driver?.let { "$it，今天适合减量" } ?: "恢复不足，今天适合减量"
+            ReadinessBand.DEPLETED -> "身体在要求休息，今天优先恢复"
+        }
     }
 
-    private fun observation(score: StatusScore, reasons: List<BriefReason>): String {
-        val facts = reasons.take(3).joinToString("；") { reason ->
-            "${reason.label} ${reason.valueText}，${reason.context}"
+    /** 用人话点名今天的主要消耗/亮点。 */
+    private fun driverPhrase(metric: ScoreMetric): String = when (metric) {
+        ScoreMetric.SLEEP -> "昨晚睡眠没补够"
+        ScoreMetric.HRV -> "身体恢复信号偏弱"
+        ScoreMetric.RESTING_HR -> "基础心率比平时紧"
+        ScoreMetric.STRESS -> "压力负荷偏高"
+        ScoreMetric.BODY_BATTERY -> "精力储备偏低"
+        ScoreMetric.SPO2 -> "血氧低于平时"
+        ScoreMetric.RESPIRATION -> "呼吸比平时快"
+    }
+
+    private fun statePhrase(c: MetricContribution): String = when {
+        c.subScore < 55 -> driverPhrase(c.metric)
+        else -> when (c.metric) {
+            ScoreMetric.SLEEP -> "昨晚睡得不错"
+            ScoreMetric.HRV -> "恢复信号在线"
+            ScoreMetric.RESTING_HR -> "基础心率很稳"
+            ScoreMetric.STRESS -> "压力不大"
+            ScoreMetric.BODY_BATTERY -> "精力储备充足"
+            ScoreMetric.SPO2 -> "血氧正常"
+            ScoreMetric.RESPIRATION -> "呼吸平稳"
+        }
+    }
+
+    /**
+     * 状态叙述: 讲身体发生了什么、对今天意味着什么。
+     * 不堆数字——读数都在下方维度条上, 这里只给解读。
+     */
+    private fun observation(score: StatusScore): String {
+        val weak = score.contributions.filter { it.subScore < 55 }
+        val strong = score.contributions.filter { it.subScore >= 80 }
+        val state = when {
+            weak.isNotEmpty() ->
+                "${weak.take(2).joinToString("、") { statePhrase(it) }}，是今天状态的主要消耗"
+            strong.isNotEmpty() ->
+                "${strong.take(2).joinToString("、") { statePhrase(it) }}，身体把近期负荷消化得不错"
+            else -> "各项都贴着你的常态走，没有明显的消耗点"
         }
         val byMetric = score.contributions.associateBy { it.metric }
         fun c(metric: ScoreMetric) = byMetric[metric]
@@ -99,14 +150,12 @@ object DailyBriefAnalyzer {
                 "压力和储备给出了方向一致的正向信号。"
             c(ScoreMetric.SLEEP).isStrong() && c(ScoreMetric.BODY_BATTERY).isStrong() ->
                 "睡眠输入和能量储备相互印证。"
-            reasons.firstOrNull()?.subScore?.let { it < 55 } == true ->
-                "${reasons.first().label}今天拖后腿，安排上保守一点更稳。"
             else -> null
         }
-        return listOfNotNull(facts.takeIf { it.isNotBlank() }, conclusion).joinToString("。")
+        return if (conclusion != null) "$state。$conclusion" else "$state。"
     }
 
-    private fun action(score: StatusScore, reasons: List<BriefReason>): String? {
+    private fun action(score: StatusScore): String? {
         val byMetric = score.contributions.associateBy { it.metric }
         fun c(metric: ScoreMetric) = byMetric[metric]
         val weakest = score.contributions.minByOrNull { it.subScore }
@@ -121,9 +170,21 @@ object DailyBriefAnalyzer {
                 "建议：${weakMetricAdvice(weakest.metric)}"
             c(ScoreMetric.STRESS).isWeak() && c(ScoreMetric.BODY_BATTERY).isWeak() ->
                 "建议：穿插几次 5 分钟慢呼吸或散步，给身体留出回充窗口。"
-            score.overall < 70 && reasons.isNotEmpty() ->
+            score.overall < 70 && score.contributions.isNotEmpty() ->
                 "建议：今天适当做减法，优先保证恢复，明天再看这些信号是否回升。"
             else -> null
+        }
+    }
+
+    /** 近 7 天状态走向一句话 (常驻, 不足两天数据时为 null)。 */
+    private fun trajectorySummary(trajectory: List<ReadinessPoint>): String? {
+        val scores = trajectory.mapNotNull { it.score }
+        if (scores.size < 2) return null
+        val diff = scores.last() - scores.first()
+        return when {
+            diff >= 8 -> "状态分从 ${scores.first()} 回升到 ${scores.last()}，这几天恢复大于消耗。"
+            diff <= -8 -> "状态分从 ${scores.first()} 降到 ${scores.last()}，这几天消耗大于恢复，适合主动留余量。"
+            else -> "状态分在 ${scores.min()}–${scores.max()} 之间，节奏平稳。"
         }
     }
 
@@ -134,49 +195,6 @@ object DailyBriefAnalyzer {
         else -> "${limit.title}比较明显，今天先按保守状态安排。"
     }
 
-    private fun reasons(score: StatusScore): List<BriefReason> {
-        return score.contributions.sortedByDescending(::reasonPriority).take(3).map { contribution ->
-            BriefReason(
-                metric = contribution.metric,
-                label = contribution.label,
-                valueText = contribution.valueText,
-                subScore = contribution.subScore,
-                context = contribution.deltaText?.takeIf { contribution.hasMeaningfulDelta() }
-                    ?: contributionContext(contribution),
-            )
-        }
-    }
-
-    private fun contributionContext(contribution: MetricContribution): String = when {
-        contribution.subScore >= 80 -> when (contribution.metric) {
-            ScoreMetric.SLEEP -> "昨晚恢复不错"
-            ScoreMetric.STRESS -> "今天压力不高"
-            ScoreMetric.BODY_BATTERY -> "储备还可以"
-            ScoreMetric.RESTING_HR -> "心率比较稳"
-            ScoreMetric.HRV -> "恢复信号不错"
-            ScoreMetric.SPO2 -> "读数正常"
-            ScoreMetric.RESPIRATION -> "呼吸比较稳"
-        }
-        contribution.subScore >= 60 -> when (contribution.metric) {
-            ScoreMetric.SLEEP -> "还算够用"
-            ScoreMetric.STRESS -> "压力在可控范围"
-            ScoreMetric.BODY_BATTERY -> "储备中等"
-            ScoreMetric.RESTING_HR -> "接近你的常态"
-            ScoreMetric.HRV -> "接近你的常态"
-            ScoreMetric.SPO2 -> "需要继续观察"
-            ScoreMetric.RESPIRATION -> "接近你的常态"
-        }
-        else -> when (contribution.metric) {
-            ScoreMetric.SLEEP -> "昨晚恢复不足"
-            ScoreMetric.STRESS -> "今天压力偏高"
-            ScoreMetric.BODY_BATTERY -> "储备偏低"
-            ScoreMetric.RESTING_HR -> "心率偏紧"
-            ScoreMetric.HRV -> "恢复偏弱"
-            ScoreMetric.SPO2 -> "建议复测确认"
-            ScoreMetric.RESPIRATION -> "呼吸有点偏离"
-        }
-    }
-
     private fun discovery(
         date: LocalDate,
         monthTrend: TrendReport?,
@@ -185,18 +203,7 @@ object DailyBriefAnalyzer {
         historySleep: List<SleepSession>,
         zone: ZoneId,
     ): PersonalDiscovery? {
-        val scores = trajectory.mapNotNull { it.score }
-        if (scores.size >= 4) {
-            val diff = scores.last() - scores.first()
-            if (abs(diff) >= 8) {
-                return if (diff > 0) {
-                    PersonalDiscovery("最近 7 天", "状态分从 ${scores.first()} 升到 ${scores.last()}，恢复节奏正在向上。")
-                } else {
-                    PersonalDiscovery("最近 7 天", "状态分从 ${scores.first()} 降到 ${scores.last()}，适合主动留一点恢复余量。")
-                }
-            }
-        }
-
+        // 近 7 天涨跌由 trajectorySummary 常驻表达, 这里只负责更长线/更个人化的发现。
         personalizedSleepPattern(date, historyDaily, historySleep, zone)?.let { return it }
 
         val metric = monthTrend?.metrics?.firstOrNull {
@@ -285,36 +292,6 @@ object DailyBriefAnalyzer {
 
     private fun MetricContribution?.isStrong(): Boolean = this?.subScore?.let { it >= 80 } == true
 
-    private fun MetricContribution?.hasMeaningfulDelta(): Boolean {
-        val delta = this?.deltaFromRecent ?: return false
-        val threshold = when (metric) {
-            ScoreMetric.HRV -> 5.0
-            ScoreMetric.RESTING_HR -> 3.0
-            ScoreMetric.RESPIRATION -> 0.5
-            ScoreMetric.SPO2 -> 1.0
-            ScoreMetric.SLEEP -> 30.0
-            ScoreMetric.STRESS -> 5.0
-            ScoreMetric.BODY_BATTERY -> 8.0
-        }
-        return abs(delta) >= threshold
-    }
-
-    private fun reasonPriority(contribution: MetricContribution): Int {
-        val metricWeight = when (contribution.metric) {
-            ScoreMetric.SLEEP -> 40
-            ScoreMetric.BODY_BATTERY -> 36
-            ScoreMetric.HRV -> 34
-            ScoreMetric.STRESS -> 30
-            ScoreMetric.RESTING_HR -> 24
-            ScoreMetric.SPO2 -> 18
-            ScoreMetric.RESPIRATION -> 12
-        }
-        val deviation = abs(contribution.subScore - PERSONAL_BASELINE_SCORE).coerceAtMost(35)
-        val weakSignalBonus = if (contribution.subScore < 55) 100 else 0
-        val meaningfulDeltaBonus = if (contribution.hasMeaningfulDelta()) 55 else 0
-        return metricWeight + deviation + weakSignalBonus + meaningfulDeltaBonus
-    }
-
     private fun sleepDisplayDate(sleep: SleepSession, zone: ZoneId): LocalDate? = runCatching {
         val end = Instant.ofEpochMilli(sleep.endEpochMs).atZone(zone).toLocalDate()
         val start = Instant.ofEpochMilli(sleep.startEpochMs).atZone(zone).toLocalDate()
@@ -327,26 +304,21 @@ object DailyBriefAnalyzer {
         val avgStress: Int?,
     )
 
-    private const val PERSONAL_BASELINE_SCORE = 78
     private const val MIN_PATTERN_GROUP = 4
 }
 
 data class DailyBrief(
+    /** 一句有结论的判断 (不含数字)。 */
     val headline: String,
+    /** 状态叙述: 身体发生了什么、对今天意味着什么 (不含数字)。 */
     val observation: String,
+    /** 一行建议。 */
     val action: String?,
     val changeText: String?,
-    val reasons: List<BriefReason>,
     val trajectory: List<ReadinessPoint>,
+    /** 近 7 天状态走向一句话 (常驻显示在轨迹上方)。 */
+    val trajectorySummary: String?,
     val discovery: PersonalDiscovery?,
-)
-
-data class BriefReason(
-    val metric: ScoreMetric,
-    val label: String,
-    val valueText: String,
-    val subScore: Int,
-    val context: String,
 )
 
 data class ReadinessPoint(

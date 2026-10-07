@@ -8,7 +8,6 @@ import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
 import com.vita.healthtracker.data.local.entity.ExerciseSession
 import com.vita.healthtracker.data.local.entity.MoodEntry
-import com.vita.healthtracker.data.local.entity.SleepSession
 import com.vita.healthtracker.data.local.entity.WeatherEntry
 import com.vita.healthtracker.data.prefs.SettingsPreferences
 import com.vita.healthtracker.data.repository.CycleRepository
@@ -25,12 +24,16 @@ import com.vita.healthtracker.domain.DayStatus
 import com.vita.healthtracker.domain.FitnessBadgeEvaluator
 import com.vita.healthtracker.domain.FitnessProgress
 import com.vita.healthtracker.domain.HabitBadgeCatalog
+import com.vita.healthtracker.domain.Mood
+import com.vita.healthtracker.domain.MoodAggregator
+import com.vita.healthtracker.domain.MoodDaily
+import com.vita.healthtracker.domain.MoodShape
 import com.vita.healthtracker.domain.PredictionConfidence
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
@@ -42,9 +45,11 @@ data class LifeUiState(
     val entries: List<CycleEntry> = emptyList(),
     val cyclePeriods: List<CyclePeriod> = emptyList(),
     val spottingEntries: List<CycleEntry> = emptyList(),
+    val symptomOnlyEntries: List<CycleEntry> = emptyList(),
     val symptomOptions: List<String> = emptyList(),
-    val recentSleeps: List<SleepSession> = emptyList(),
-    val moods: Map<String, MoodEntry> = emptyMap(),
+    val moodDaily: Map<String, MoodDaily> = emptyMap(),
+    /** 选择器可见的自定义情绪 (未归档)。 */
+    val customMoods: List<Mood> = emptyList(),
     val weather: Map<String, WeatherEntry> = emptyMap(),
     val habits: List<HabitDefinition> = emptyList(),
     val habitCheckIns: List<HabitCheckIn> = emptyList(),
@@ -75,43 +80,35 @@ class LifeViewModel(
     private val settingsPreferences: SettingsPreferences,
 ) : ViewModel() {
 
-    private val _prediction = MutableStateFlow<CyclePrediction?>(null)
-    private val _todayStatus = MutableStateFlow(DayStatus.UNKNOWN)
-    private val _todayPeriodDay = MutableStateFlow<Int?>(null)
-
     val state: StateFlow<LifeUiState> = run {
         val now = Instant.now()
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now()
-        val sleepFrom = LocalDate.now().minusDays(14).atStartOfDay(zone).toInstant()
 
         val journal = combine(
             moodRepo.observeRange(today.minusDays(370), today),
+            moodRepo.observeActiveCustomMoods(),
             weatherRepo.observeRange(today.minusDays(370), today),
-        ) { moods, weather -> JournalData(moods, weather) }
-        val cycleToday = combine(
-            _todayStatus,
-            _todayPeriodDay,
-        ) { status, periodDay -> CycleTodayData(status, periodDay) }
+        ) { moods, customMoods, weather -> JournalData(moods, customMoods, weather) }
         val base = combine(
             cycleRepo.observeAll(),
-            _prediction,
-            cycleToday,
-            healthRepo.sleepRange(sleepFrom, now),
             journal,
-        ) { entries, prediction, cycleTodayData, sleeps, journalData ->
+        ) { entries, journalData ->
             val periods = CycleLogLogic.groupIntoPeriods(entries)
+            // 预测直接由当前 entries 派生, 与列表保证一致 (不再用单独的 StateFlow 手动刷新)。
+            val overview = cycleOverview(periods)
             LifeUiState(
                 entries = entries,
                 cyclePeriods = periods,
                 spottingEntries = CycleLogLogic.spottingEntries(entries),
+                symptomOnlyEntries = CycleLogLogic.symptomOnlyEntries(entries),
                 symptomOptions = CycleLogLogic.symptomOptions(entries),
-                recentSleeps = sleeps.sortedByDescending { it.startEpochMs },
-                moods = journalData.moods.associateBy { it.date },
+                moodDaily = MoodAggregator.daily(journalData.moods, zone).mapKeys { it.key.toString() },
+                customMoods = journalData.customMoods,
                 weather = journalData.weather.associateBy { it.date },
-                prediction = prediction,
-                todayStatus = cycleTodayData.status,
-                todayPeriodDay = cycleTodayData.periodDay,
+                prediction = overview.prediction,
+                todayStatus = overview.status,
+                todayPeriodDay = overview.periodDay,
             )
         }
         combine(
@@ -160,11 +157,6 @@ class LifeViewModel(
     }
 
     init {
-        viewModelScope.launch {
-            cycleRepo.observeAll().collect { entries ->
-                refreshPredictionFromEntries(entries)
-            }
-        }
         viewModelScope.launch { cycleRepo.syncFromHealthConnect() }
         // 第一次观察到某徽章已获得就记录解锁日期（幂等, 不覆盖旧日期）。
         viewModelScope.launch {
@@ -187,6 +179,7 @@ class LifeViewModel(
         symptoms: Set<String> = emptySet(),
     ) {
         viewModelScope.launch {
+            if (recordType == CycleRecordType.SYMPTOMS && symptoms.isEmpty()) return@launch
             var current = startDate
             while (!current.isAfter(endDate)) {
                 val mark = recordType == CycleRecordType.PERIOD && isStart && current == startDate
@@ -201,7 +194,6 @@ class LifeViewModel(
                 )
                 current = current.plusDays(1)
             }
-            refreshPrediction()
         }
     }
 
@@ -209,14 +201,89 @@ class LifeViewModel(
     fun deleteCyclePeriod(period: CyclePeriod) {
         viewModelScope.launch {
             period.entries.forEach { cycleRepo.delete(it.date) }
-            refreshPrediction()
+        }
+    }
+
+    /** 单天经量编辑: flow<=0 删除该天记录; 保留已有症状/备注; 编辑过即视为手动数据不再被外部覆盖。 */
+    fun setDayFlow(date: LocalDate, flow: Int) {
+        viewModelScope.launch {
+            val existing = state.value.entries.firstOrNull { it.date == date.toString() }
+            if (flow <= 0) {
+                if (existing != null) {
+                    val symptomsCsv = existing.symptomsCsv?.takeIf { it.isNotBlank() }
+                    if (symptomsCsv == null) {
+                        cycleRepo.delete(existing.date)
+                    } else {
+                        cycleRepo.upsert(
+                            existing.copy(
+                                flow = 0,
+                                isPeriodStart = false,
+                                notes = null,
+                                source = "manual",
+                            )
+                        )
+                    }
+                }
+            } else {
+                // 在经期编辑器里明确设了经量, 就不再是「经间出血」, 并入经期。
+                val entry = existing?.copy(
+                    flow = flow.coerceIn(1, 4),
+                    notes = existing.notes?.takeUnless { it == CycleLogLogic.NOTE_INTERMENSTRUAL_BLEEDING },
+                    source = "manual",
+                )
+                    ?: CycleEntry(date = date.toString(), flow = flow.coerceIn(1, 4), isPeriodStart = false)
+                cycleRepo.upsert(entry)
+            }
+        }
+    }
+
+    /** 单天症状编辑: 无出血记录时新建「仅症状」记录。 */
+    fun setDaySymptoms(date: LocalDate, symptoms: Set<String>) {
+        viewModelScope.launch {
+            val symptomsCsv = CycleLogLogic.encodeSymptoms(symptoms)
+            val existing = state.value.entries.firstOrNull { it.date == date.toString() }
+            when {
+                existing != null -> {
+                    if (existing.flow <= 0 && symptomsCsv == null) {
+                        cycleRepo.delete(existing.date)
+                    } else {
+                        cycleRepo.upsert(existing.copy(symptomsCsv = symptomsCsv, source = "manual"))
+                    }
+                }
+
+                symptomsCsv != null -> {
+                    cycleRepo.upsert(
+                        CycleLogLogic.buildEntry(
+                            date = date,
+                            recordType = CycleRecordType.SYMPTOMS,
+                            flow = 0,
+                            isStart = false,
+                            symptoms = symptoms,
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    /** 把一段经期的起始日改为指定日期; 该天还没有记录时先补一条, 段内其它天清除起始标记。 */
+    fun setPeriodStartDay(period: CyclePeriod, startDate: LocalDate) {
+        viewModelScope.launch {
+            if (period.entries.none { it.date == startDate.toString() }) {
+                cycleRepo.upsert(CycleEntry(startDate.toString(), flow = 2, isPeriodStart = true))
+            }
+            period.entries.forEach { entry ->
+                val shouldBeStart = entry.date == startDate.toString()
+                if (entry.isPeriodStart != shouldBeStart) {
+                    cycleRepo.upsert(entry.copy(isPeriodStart = shouldBeStart, source = "manual"))
+                }
+            }
         }
     }
 
     fun deleteCycle(date: String) {
         viewModelScope.launch {
             cycleRepo.delete(date)
-            refreshPrediction()
         }
     }
 
@@ -226,27 +293,57 @@ class LifeViewModel(
         }
     }
 
-    fun setMood(date: LocalDate, moodId: String, note: String = "") {
+    /** 记一条情绪时刻。[recordedAt] 缺省即「此刻」, 补录过去某天时由界面给出该天的时刻; [weatherId] 为当时天气 (可空)。 */
+    fun logMoodMoment(
+        moodId: String,
+        recordedAt: LocalDateTime = LocalDateTime.now(),
+        note: String = "",
+        weatherId: String? = null,
+    ) {
         viewModelScope.launch {
-            moodRepo.setMood(date, moodId, note)
+            val epochMs = recordedAt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            moodRepo.addMoment(moodId, epochMs, note, weatherId)
         }
     }
 
-    fun clearMood(date: LocalDate) {
+    /** 修改已有时刻的情绪/备注/天气 (时间不变)。 */
+    fun updateMoodMoment(id: String, moodId: String, note: String = "", weatherId: String? = null) {
         viewModelScope.launch {
-            moodRepo.clearMood(date)
+            moodRepo.updateMoment(id, moodId, note, weatherId)
         }
     }
 
-    fun setWeather(date: LocalDate, weatherId: String) {
+    fun deleteMoodMoment(id: String) {
         viewModelScope.launch {
-            weatherRepo.setWeather(date, weatherId)
+            moodRepo.deleteMoment(id)
         }
     }
 
-    fun clearWeather(date: LocalDate) {
+    /** 清掉某一天全部情绪时刻。 */
+    fun clearMoodDay(date: LocalDate) {
         viewModelScope.launch {
-            weatherRepo.clearWeather(date)
+            moodRepo.clearDay(date)
+        }
+    }
+
+    // ──── 自定义情绪 ────────────────────────────────────────
+
+    fun createCustomMood(label: String, colorHex: Long, shape: MoodShape, valence: Int) {
+        viewModelScope.launch {
+            moodRepo.createCustomMood(label, colorHex, shape, valence)
+        }
+    }
+
+    fun updateCustomMood(id: String, label: String, colorHex: Long, shape: MoodShape, valence: Int) {
+        viewModelScope.launch {
+            moodRepo.updateCustomMood(id, label, colorHex, shape, valence)
+        }
+    }
+
+    /** 删除 = 归档: 历史记录保留, 选择器不再出现。 */
+    fun archiveCustomMood(id: String) {
+        viewModelScope.launch {
+            moodRepo.archiveCustomMood(id)
         }
     }
 
@@ -286,67 +383,49 @@ class LifeViewModel(
 
     // ──── 贝叶斯预测 ────────────────────────────────────────
 
-    private fun refreshPrediction() {
-        viewModelScope.launch {
-            refreshPredictionFromEntries(cycleRepo.getAll())
-        }
-    }
-
     private data class JournalData(
         val moods: List<MoodEntry>,
+        val customMoods: List<Mood>,
         val weather: List<WeatherEntry>,
     )
 
-    private data class CycleTodayData(
+    private data class CycleOverview(
+        val prediction: CyclePrediction?,
         val status: DayStatus,
         val periodDay: Int?,
     )
 
-    private fun refreshPredictionFromEntries(allEntries: List<CycleEntry>) {
-        val periods = CycleLogLogic.groupIntoPeriods(allEntries)
+    /** 由经期分段纯函数式推出预测与今日状态 (每次 entries 变化都重新派生)。 */
+    private fun cycleOverview(periods: List<CyclePeriod>): CycleOverview {
+        if (periods.isEmpty()) return CycleOverview(null, DayStatus.UNKNOWN, null)
 
-        if (periods.isEmpty()) {
-            _prediction.value = null
-            _todayStatus.value = DayStatus.UNKNOWN
-            _todayPeriodDay.value = null
-            return
-        }
-
-        val hasExplicitStarts = periods.any { period -> period.entries.any { it.isPeriodStart } }
-        val predictionPeriods = if (hasExplicitStarts) {
-            periods.filter { period -> period.entries.any { it.isPeriodStart } }
-        } else {
-            periods
-        }
-
-        val starts = predictionPeriods.mapNotNull { period ->
-            if (hasExplicitStarts) {
-                period.entries
-                    .firstOrNull { it.isPeriodStart }
-                    ?.date
-                    ?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
-            } else {
-                period.startDate
-            }
+        // 每段经期各自取显式标记的起始日, 没标记就用该段第一天——
+        // 只给其中一段标过起始日时, 其它段照样参与预测, 不会被整段排除。
+        val starts = periods.map { period ->
+            period.entries
+                .firstOrNull { it.isPeriodStart }
+                ?.date
+                ?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+                ?: period.startDate
         }.sorted()
-        val durations = predictionPeriods.map { it.days }
-
-        val prediction = BayesianCycleModel.predict(starts, durations)
-        _prediction.value = prediction
+        val durations = periods.map { it.days }
 
         val today = LocalDate.now()
+        val prediction = BayesianCycleModel.predict(starts, durations, today)
+
         val lastPeriod = periods.maxByOrNull { it.startDate }
         val currentPeriod = periods.firstOrNull { period ->
             !today.isBefore(period.startDate) && !today.isAfter(period.endDate)
         }
-        _todayPeriodDay.value = currentPeriod?.let {
+        val periodDay = currentPeriod?.let {
             ChronoUnit.DAYS.between(it.startDate, today).toInt() + 1
         }
-        _todayStatus.value = BayesianCycleModel.getDayStatus(
+        val status = BayesianCycleModel.getDayStatus(
             date = today,
             prediction = prediction,
             lastPeriodStart = lastPeriod?.startDate,
             periodDays = lastPeriod?.days ?: 5,
         )
+        return CycleOverview(prediction, status, periodDay)
     }
 }

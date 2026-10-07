@@ -3,7 +3,6 @@ package com.vita.healthtracker.ui.screens.today
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,14 +19,11 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,12 +64,22 @@ private fun toneColor(tone: InsightTone): Color = when (tone) {
     InsightTone.ALERT -> VitaError
 }
 
-/** 当日简报: 首屏只保留判断、建议和三个理由，完整评分依据按需展开。 */
+/**
+ * 当日状态卡: 一屏读完, 没有任何展开/折叠。
+ * 阅读顺序: 分数 + 一句判断 → 状态叙述/建议 (讲意义, 不报数) → 各维度条 (数字只在这里出现一遍)
+ * → 1-2 条洞察 → 近 7 天走向一句话 + 迷你曲线。
+ *
+ * [aiTakeover] = 今天已有 AI 解读时为 true: 本地模板叙述/洞察让位给下方 AI 卡 (同一件事不用两种口径讲两遍),
+ * 分数环、一句判断、维度条和 7 天轨迹仍常驻; AI 结果过期后本地叙述自动回来。
+ */
 @Composable
-fun StatusScoreCard(score: StatusScore, brief: DailyBrief, modifier: Modifier = Modifier) {
+fun StatusScoreCard(
+    score: StatusScore,
+    brief: DailyBrief,
+    modifier: Modifier = Modifier,
+    aiTakeover: Boolean = false,
+) {
     val accent = bandColor(score.band)
-    var showDetails by rememberSaveable { mutableStateOf(false) }
-    var selected by remember { mutableStateOf<DailyInsight?>(null) }
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -89,18 +95,13 @@ fun StatusScoreCard(score: StatusScore, brief: DailyBrief, modifier: Modifier = 
                     MaterialTheme.shapes.large,
                 )
                 .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            // ── 顶部: 一句判断 + 一条行动建议 ──
+            // ── 分数 + 一句判断 ──
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ScoreRing(score = score.overall, accent = accent)
                 Spacer(Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "当日简报",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                     Text(
                         text = brief.headline,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -117,74 +118,137 @@ fun StatusScoreCard(score: StatusScore, brief: DailyBrief, modifier: Modifier = 
                 }
             }
 
-            Text(
-                text = brief.observation,
-                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp),
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-
-            brief.action?.let { action ->
+            // ── 状态叙述 + 建议: 讲身体发生了什么、对今天意味着什么 (AI 接管时由 AI 卡讲) ──
+            if (!aiTakeover) {
                 Text(
-                    text = action,
-                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 19.sp),
-                    color = accent.copy(alpha = 0.92f),
+                    text = brief.observation,
+                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp),
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
-            }
-
-            TextButton(onClick = { showDetails = !showDetails }) {
-                Text(
-                    text = if (showDetails) "收起详情" else "看看为什么",
-                    color = accent,
-                )
-            }
-
-            if (showDetails) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                brief.action?.let { action ->
                     Text(
-                        text = "${score.confidence.label} · 已参考 ${score.baselineDays} 天记录",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        text = action,
+                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 19.sp),
+                        color = accent.copy(alpha = 0.92f),
                     )
-                    if (score.limits.isNotEmpty()) {
-                        val leadLimit = score.limits.minByOrNull { it.cap }
-                        Text(
-                            text = "如果只看各项读数，大约是 ${score.weightedOverall} 分；考虑到${leadLimit?.title ?: "今天有需要留意的地方"}，今天更适合按 ${score.overall} 分来安排。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = VitaActive,
-                        )
-                        Text(
-                            text = "这个分数是给今天做取舍用的，不是健康诊断。读数和平时差很多时，先复核佩戴和身体感受。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f),
-                        )
-                        score.limits.sortedBy { it.cap }.forEach { limit ->
-                            Text(
-                                text = "· ${limit.detail}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                    score.contributions.forEach { ContributionBar(it) }
-                    if (score.insights.isNotEmpty()) {
-                        Text(
-                            text = "更多说明",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        score.insights.forEach { insight ->
-                            InsightRow(insight = insight, onClick = { selected = insight })
-                        }
-                    }
                 }
+            }
+
+            // ── 各维度现状 (常驻) ──
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                score.contributions.forEach { ContributionBar(it) }
+            }
+
+            // ── 洞察: 怎么回事 + 怎么做, 全文直接给 (AI 接管时由 AI 卡讲) ──
+            if (!aiTakeover) {
+                score.insights.forEach { insight -> InsightRow(insight) }
+            }
+
+            // ── 近 7 天轨迹: 先一句走向, 再上曲线 ──
+            Text(
+                text = "近 7 天",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            brief.trajectorySummary?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            TrajectoryStrip(brief)
+            brief.discovery?.let { discovery ->
+                Text(
+                    text = "${discovery.title}：${discovery.text}",
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                    color = VitaTertiary,
+                )
+            }
+
+            Text(
+                text = "${score.confidence.label} · 已参考 ${score.baselineDays} 天记录",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            )
+        }
+    }
+}
+
+/** 近 7 天状态分迷你曲线 + 星期标尺。 */
+@Composable
+private fun TrajectoryStrip(brief: DailyBrief) {
+    val points = brief.trajectory
+    if (points.isEmpty()) return
+    val scoreColor = { value: Int ->
+        when {
+            value >= 80 -> VitaTertiary
+            value >= 60 -> VitaPrimary
+            else -> VitaActive
+        }
+    }
+    androidx.compose.foundation.Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(64.dp),
+    ) {
+        val left = 5.dp.toPx()
+        val right = size.width - 5.dp.toPx()
+        val top = 6.dp.toPx()
+        val bottom = size.height - 6.dp.toPx()
+        val step = if (points.size <= 1) 0f else (right - left) / (points.size - 1)
+        fun offset(index: Int, value: Int): Offset {
+            val y = bottom - (value.coerceIn(0, 100) / 100f) * (bottom - top)
+            return Offset(left + index * step, y)
+        }
+        points.zipWithNext().forEachIndexed { index, (first, second) ->
+            val a = first.score
+            val b = second.score
+            if (a != null && b != null) {
+                drawLine(
+                    brush = Brush.linearGradient(
+                        listOf(scoreColor(a), scoreColor(b)),
+                        start = offset(index, a),
+                        end = offset(index + 1, b),
+                    ),
+                    start = offset(index, a),
+                    end = offset(index + 1, b),
+                    strokeWidth = 3.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+            }
+        }
+        points.forEachIndexed { index, point ->
+            point.score?.let { value ->
+                drawCircle(
+                    color = scoreColor(value),
+                    radius = 3.5.dp.toPx(),
+                    center = offset(index, value),
+                )
             }
         }
     }
-
-    selected?.let { insight ->
-        InsightDetailSheet(insight = insight, onDismiss = { selected = null })
+    Row(modifier = Modifier.fillMaxWidth()) {
+        points.forEach { point ->
+            Text(
+                text = weekDayShort(point.date.dayOfWeek.value),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (point == points.last()) VitaPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = if (point == points.last()) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
+}
+
+private fun weekDayShort(day: Int): String = when (day) {
+    1 -> "一"
+    2 -> "二"
+    3 -> "三"
+    4 -> "四"
+    5 -> "五"
+    6 -> "六"
+    else -> "日"
 }
 
 @Composable
@@ -289,15 +353,15 @@ private fun subScoreColor(sub: Int): Color = when {
     else -> VitaError
 }
 
+/** 洞察: 结论 + 建议一次性给全, 不可点、没有第二层。 */
 @Composable
-private fun InsightRow(insight: DailyInsight, onClick: () -> Unit) {
+private fun InsightRow(insight: DailyInsight) {
     val color = toneColor(insight.tone)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(color.copy(alpha = 0.08f))
-            .clickable(onClick = onClick)
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -321,49 +385,6 @@ private fun InsightRow(insight: DailyInsight, onClick: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
-            )
-            Text(
-                text = "展开说明 ›",
-                style = MaterialTheme.typography.labelMedium,
-                color = color,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        }
-    }
-}
-
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun InsightDetailSheet(insight: DailyInsight, onDismiss: () -> Unit) {
-    val color = toneColor(insight.tone)
-    androidx.compose.material3.ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFF0E1320),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 22.dp, end = 22.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(color),
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    text = insight.title,
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-            Text(
-                text = insight.detail,
-                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 26.sp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

@@ -58,8 +58,6 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import com.vita.healthtracker.data.local.entity.ExerciseSession
 import com.vita.healthtracker.domain.ExerciseClassifier
-import com.vita.healthtracker.domain.LocalAssociationReport
-import com.vita.healthtracker.domain.LongTermTrendReport
 import com.vita.healthtracker.domain.healthSourceLabel
 import com.vita.healthtracker.ui.components.RangeSelector
 import com.vita.healthtracker.ui.components.StatsRange
@@ -105,13 +103,6 @@ fun StatsScreen(navController: NavController) {
             .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        state.longTermTrend?.let {
-            LongTermTrendCard(it)
-        }
-        state.localAssociations?.let {
-            LocalAssociationCard(it)
-        }
-
         StatsCalendarCard(
             state = state,
             onPreviousMonth = vm::previousCalendarMonth,
@@ -177,6 +168,15 @@ fun StatsScreen(navController: NavController) {
                 } else {
                     Text("暂无数据", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                // 每晚睡眠明细从记录页移到这里: 它是查数据, 不是记录。
+                Text(
+                    text = "每晚睡眠明细 ›",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = VitaTertiary,
+                    modifier = Modifier
+                        .padding(top = 10.dp)
+                        .clickable { navController.navigate("sleep_detail") },
+                )
             }
 
             ChartCard(title = "平均心率", accentColor = VitaHeart) {
@@ -217,108 +217,6 @@ fun StatsScreen(navController: NavController) {
                     onExerciseClick = { ex -> navController.navigate("exercise/${ex.id}") }
                 )
             }
-        }
-    }
-}
-
-/** 趋势页的第一张卡: 先回答多年发生了什么，再让图表和日历提供证据。 */
-@Composable
-private fun LongTermTrendCard(report: LongTermTrendReport) {
-    ChartCard(title = "你的长期变化", accentColor = VitaTertiary) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            val fmt = remember { DateTimeFormatter.ofPattern("yyyy-MM-dd") }
-            Text(
-                text = "${report.firstDate.format(fmt)} ~ ${report.lastDate.format(fmt)} · ${report.trackedDays} 个有记录日",
-                style = MaterialTheme.typography.bodySmall,
-                color = VitaOnSurfaceMuted,
-            )
-            Text(
-                text = report.headline,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            report.changes.forEach { change ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(VitaTertiary.copy(alpha = 0.07f), RoundedCornerShape(12.dp))
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(
-                            text = change.label,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = change.deltaText,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = VitaTertiary,
-                        )
-                    }
-                    Text(
-                        text = change.analysisText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = "${change.note} · 共 ${change.sampleDays} 天记录",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = VitaOnSurfaceMuted,
-                    )
-                }
-            }
-            Text(
-                text = "只统计已经记录到的日子；空白日期不会补成 0。",
-                style = MaterialTheme.typography.bodySmall,
-                color = VitaOnSurfaceMuted,
-            )
-        }
-    }
-}
-
-@Composable
-private fun LocalAssociationCard(report: LocalAssociationReport) {
-    ChartCard(title = "可能有关的事", accentColor = VitaPrimary) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(
-                text = if (report.insightCount > 0) {
-                    "从你的记录里，暂时看到 ${report.insightCount} 个可能有关的模式。"
-                } else {
-                    "还在积累记录；数据不够时，Vita 不会硬下结论。"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = VitaOnSurfaceMuted,
-            )
-            report.topics.forEach { topic ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(VitaPrimary.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        text = topic.title,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    topic.finding?.let {
-                        Text(it, style = MaterialTheme.typography.bodyMedium, color = VitaPrimary)
-                    }
-                    Text(topic.evidence, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(topic.note, style = MaterialTheme.typography.bodySmall, color = VitaOnSurfaceMuted)
-                }
-            }
-            Text(
-                text = "这里只提醒哪些事情常常一起出现，不代表其中一件一定导致另一件。",
-                style = MaterialTheme.typography.bodySmall,
-                color = VitaOnSurfaceMuted,
-            )
         }
     }
 }

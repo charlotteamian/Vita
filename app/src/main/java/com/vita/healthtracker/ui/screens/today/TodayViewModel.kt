@@ -2,6 +2,8 @@ package com.vita.healthtracker.ui.screens.today
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vita.healthtracker.data.ai.AiInsight
+import com.vita.healthtracker.data.ai.AiInsightManager
 import com.vita.healthtracker.data.local.entity.BodyBatterySample
 import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
@@ -58,10 +60,8 @@ data class TodayUiState(
     val dailyBrief: DailyBrief? = null,
     /** 满足持续时间、偏离幅度和样本量门槛的本地预警事件。 */
     val anomalyEvents: List<AnomalyEvent> = emptyList(),
-    /** 月度身体趋势 (近30天 vs 上个30天); 样本不足为 null。 */
+    /** 月度身体趋势 (近30天 vs 上个30天), 供洞察引擎判断持续走弱; 样本不足为 null。 */
     val monthTrend: TrendReport? = null,
-    /** 年度身体趋势 (近90天 vs 去年同期); 样本不足为 null。 */
-    val yearTrend: TrendReport? = null,
     /** 用户在设置里勾选要在首页展示的数据项 (HomeMetric.key)。 */
     val enabledMetrics: Set<String> = HomeMetric.DEFAULT_KEYS,
 ) {
@@ -77,9 +77,18 @@ class TodayViewModel(
     private val habitRepo: HabitRepository,
     private val moodRepo: MoodRepository,
     private val cycleRepo: CycleRepository,
+    private val aiManager: AiInsightManager,
 ) : ViewModel() {
 
     private val _selectedDate = MutableStateFlow(LocalDate.now())
+
+    // ─── AI 今日解读: 状态在 manager (app scope), 离开页面分析不中断 ───
+    val aiTodayStatus: StateFlow<AiInsightManager.Status> = aiManager.todayStatus
+    val aiTodayInsight: StateFlow<AiInsight?> = aiManager.todayInsight
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun requestAiToday() = aiManager.requestTodayAnalysis()
+    fun cancelAiToday() = aiManager.cancelTodayAnalysis()
 
     val state: StateFlow<TodayUiState> = run {
         val zone = ZoneId.systemDefault()
@@ -128,18 +137,18 @@ class TodayViewModel(
                 val baselineDaily = history.daily.filter { it.date in sixtyAgo..date.toString() }
                 val sleepCutoffMs = date.minusDays(BASELINE_DAYS).atStartOfDay(zone).toInstant().toEpochMilli()
                 val baselineSleep = history.sleeps.filter { it.endEpochMs >= sleepCutoffMs }
+                val monthTrend = TrendAnalyzer.analyze(
+                    TrendAnalyzer.TrendWindow.MONTH, date, history.daily, history.sleeps, zone,
+                )
+                // 月度趋势先算好喂给评分引擎: 洞察会结合短期偏离 + 30 天走向判断是否持续走弱。
                 val readiness = ReadinessEngine.evaluate(
                     date = date.toString(),
                     today = data.daily.firstOrNull(),
                     lastSleep = selectedSleep,
                     baselineDaily = baselineDaily,
                     baselineSleep = baselineSleep,
-                )
-                val monthTrend = TrendAnalyzer.analyze(
-                    TrendAnalyzer.TrendWindow.MONTH, date, history.daily, history.sleeps, zone,
-                )
-                val yearTrend = TrendAnalyzer.analyze(
-                    TrendAnalyzer.TrendWindow.YEAR, date, history.daily, history.sleeps, zone,
+                    zone = zone,
+                    monthTrend = monthTrend,
                 )
                 val dailyBrief = readiness?.let {
                     DailyBriefAnalyzer.analyze(
@@ -185,7 +194,6 @@ class TodayViewModel(
                     dailyBrief = dailyBrief,
                     anomalyEvents = anomalyEvents,
                     monthTrend = monthTrend,
-                    yearTrend = yearTrend,
                 )
             }
         }

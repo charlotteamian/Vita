@@ -22,6 +22,13 @@ interface SleepDao {
     @Query("DELETE FROM sleep_session WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<String>)
 
+    @Query("SELECT * FROM sleep_session WHERE id = :id")
+    suspend fun byId(id: String): SleepSession?
+
+    /** 手动修正/删除过的记录: 同步写入时用来挡住外部数据覆盖或复活。 */
+    @Query("SELECT * FROM sleep_session WHERE isEdited = 1 OR isDeleted = 1")
+    suspend fun protectedSessions(): List<SleepSession>
+
     @Query("SELECT * FROM sleep_session ORDER BY startEpochMs DESC LIMIT 1")
     fun latestFlow(): Flow<SleepSession?>
 

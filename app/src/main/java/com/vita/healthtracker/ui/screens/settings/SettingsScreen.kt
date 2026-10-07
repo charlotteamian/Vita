@@ -1,5 +1,8 @@
 package com.vita.healthtracker.ui.screens.settings
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
@@ -9,6 +12,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,16 +30,20 @@ import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.HealthAndSafety
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.ViewAgenda
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -44,10 +52,13 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -55,11 +66,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.vita.healthtracker.R
+import com.vita.healthtracker.BuildConfig
+import com.vita.healthtracker.data.ai.AiApiPresets
 import com.vita.healthtracker.data.healthconnect.HealthConnectManager
+import com.vita.healthtracker.data.prefs.SettingsPreferences
 import com.vita.healthtracker.domain.HomeMetric
 import com.vita.healthtracker.ui.theme.VitaError
 import com.vita.healthtracker.ui.theme.VitaGradients
@@ -67,6 +83,7 @@ import com.vita.healthtracker.ui.theme.VitaTertiary
 import com.vita.healthtracker.ui.vitaViewModel
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
 @Composable
@@ -93,6 +110,20 @@ fun SettingsScreen(navController: NavController) {
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri -> uri?.let(vm::importFrom) }
+
+    val locationPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) vm.setWeatherAutoEnabled(true)
+        else vm.showMessage("未授予位置权限，无法自动获取天气")
+    }
+
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) vm.setReminderEnabled(true)
+        else vm.showMessage("未授予通知权限，提醒无法弹出")
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -354,6 +385,242 @@ fun SettingsScreen(navController: NavController) {
                         ) { Text(label) }
                     }
                 }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.Cloud, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+                        Text(
+                            "自动获取天气",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            "用大致位置从 Open-Meteo 取天气（每天一次，免费）；关闭则不联网取位置。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = state.weatherAutoEnabled,
+                        onCheckedChange = { checked ->
+                            if (!checked) {
+                                vm.setWeatherAutoEnabled(false)
+                            } else {
+                                val granted = ContextCompat.checkSelfPermission(
+                                    context, Manifest.permission.ACCESS_COARSE_LOCATION,
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (granted) vm.setWeatherAutoEnabled(true)
+                                else locationPermLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+                            }
+                        },
+                    )
+                }
+
+                Text(
+                    "AI 分析",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+                Text(
+                    "趋势页「AI 洞察」的分析方式: Mac 桥接走家里电脑的订阅额度 (需同一 Wi-Fi); API 直连由手机直接调大模型, 出门也能用, 费用走自己的 API Key。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.aiMode == SettingsPreferences.AI_MODE_LAN,
+                        onClick = { vm.setAiMode(SettingsPreferences.AI_MODE_LAN) },
+                        label = { Text("Mac 桥接") },
+                    )
+                    FilterChip(
+                        selected = state.aiMode == SettingsPreferences.AI_MODE_API,
+                        onClick = { vm.setAiMode(SettingsPreferences.AI_MODE_API) },
+                        label = { Text("API 直连") },
+                    )
+                }
+                if (state.aiMode == SettingsPreferences.AI_MODE_API) {
+                    val preset = AiApiPresets.byId(state.aiApiPreset)
+                    var apiKey by remember(state.aiApiKey) { mutableStateOf(state.aiApiKey) }
+                    var apiModel by remember(state.aiApiModel) { mutableStateOf(state.aiApiModel) }
+                    var apiBase by remember(state.aiApiBaseUrl) { mutableStateOf(state.aiApiBaseUrl) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        AiApiPresets.ALL.forEach { p ->
+                            FilterChip(
+                                selected = state.aiApiPreset == p.id,
+                                onClick = { vm.setAiApiPreset(p.id) },
+                                label = { Text(p.label) },
+                            )
+                        }
+                    }
+                    Column(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = apiKey,
+                            onValueChange = { apiKey = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            placeholder = { Text("API Key", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        )
+                        OutlinedTextField(
+                            value = apiModel,
+                            onValueChange = { apiModel = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = {
+                                Text(
+                                    if (preset.defaultModel.isNotEmpty()) "模型 · 默认 ${preset.defaultModel}" else "模型名称",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            },
+                        )
+                        OutlinedTextField(
+                            value = apiBase,
+                            onValueChange = { apiBase = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = {
+                                Text(
+                                    if (preset.baseUrl.isNotEmpty()) "地址 · 默认 ${preset.baseUrl}" else "https://api.example.com/v1",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            },
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(
+                                onClick = { vm.saveAiApiConfig(apiBase, apiKey, apiModel) },
+                                enabled = apiBase.trim() != state.aiApiBaseUrl ||
+                                    apiKey.trim() != state.aiApiKey ||
+                                    apiModel.trim() != state.aiApiModel,
+                            ) { Text("保存 API 设置") }
+                            TextButton(
+                                onClick = { vm.saveAndTestAiApi(apiBase, apiKey, apiModel) },
+                                enabled = !state.aiApiTesting,
+                            ) { Text(if (state.aiApiTesting) "测试中…" else "测试连接") }
+                        }
+                        state.aiApiTestResult?.let { result ->
+                            Text(
+                                result,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (result.startsWith("连接正常")) MaterialTheme.colorScheme.primary else VitaError,
+                            )
+                        }
+                    }
+                } else {
+                    Text(
+                        "自动发现已关闭, 需手动填写 Mac 局域网地址和服务口令。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                    )
+                    var aiAddress by remember(state.aiServerAddress) { mutableStateOf(state.aiServerAddress) }
+                    var aiToken by remember(state.aiServerToken) { mutableStateOf(state.aiServerToken) }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = aiAddress,
+                            onValueChange = { aiAddress = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = { Text("192.168.1.5:8787", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        )
+                        OutlinedTextField(
+                            value = aiToken,
+                            onValueChange = { aiToken = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            placeholder = { Text("VITA_AI_TOKEN", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        )
+                        TextButton(
+                            onClick = {
+                                vm.setAiServerAddress(aiAddress)
+                                vm.setAiServerToken(aiToken)
+                            },
+                            enabled = aiAddress.trim() != state.aiServerAddress || aiToken.trim() != state.aiServerToken,
+                        ) { Text("保存 AI 设置") }
+                    }
+                }
+            }
+        }
+
+        // ─── 记录提醒 ────────────────────────────────────────────
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            Column(
+                modifier = Modifier
+                    .background(VitaGradients.cardSurface, MaterialTheme.shapes.medium)
+                    .padding(20.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Notifications, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+                        Text(
+                            "记录提醒",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            "到点提醒记一下心情，避免一整天忘了记。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = state.reminderEnabled,
+                        onCheckedChange = { checked ->
+                            if (!checked) {
+                                vm.setReminderEnabled(false)
+                            } else {
+                                val needNotifPerm = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                    ContextCompat.checkSelfPermission(
+                                        context, Manifest.permission.POST_NOTIFICATIONS,
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                if (needNotifPerm) notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                else vm.setReminderEnabled(true)
+                            }
+                        },
+                    )
+                }
+                Text(
+                    "提醒时刻",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
+                )
+                val presetTimes = remember {
+                    listOf(LocalTime.of(9, 0), LocalTime.of(13, 0), LocalTime.of(18, 0), LocalTime.of(21, 0))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    presetTimes.forEach { time ->
+                        FilterChip(
+                            selected = state.reminderTimes.any { it.hour == time.hour && it.minute == time.minute },
+                            onClick = { vm.toggleReminderTime(time) },
+                            enabled = state.reminderEnabled,
+                            label = {
+                                Text(
+                                    "%02d:%02d".format(time.hour, time.minute),
+                                    maxLines = 1,
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
             }
         }
 
@@ -456,6 +723,8 @@ fun SettingsScreen(navController: NavController) {
             }
         }
 
+        AppUpdateCard(vm)
+
         // ─── About Card ─────────────────────────────────────────
         Card(
             colors = CardDefaults.cardColors(containerColor = Color.Transparent),
@@ -472,7 +741,7 @@ fun SettingsScreen(navController: NavController) {
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "Vita 0.2.0\n数据源: Health Connect (佳明/三星/小米等) + 手机内置步数传感器\n本地存储,不上云。\n\n后台同步: 每 3 小时自动拉取最新数据",
+                    stringResource(R.string.settings_about_body, BuildConfig.VERSION_NAME),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),

@@ -14,6 +14,10 @@ interface WeatherDao {
     @Query("SELECT * FROM weather_entry")
     suspend fun all(): List<WeatherEntry>
 
+    /** 用户手动记录的天气日期; 自动获取时跳过这些天, 不覆盖手动记录。 */
+    @Query("SELECT date FROM weather_entry WHERE source = 'manual'")
+    suspend fun manualDates(): List<String>
+
     @Upsert
     suspend fun upsert(entry: WeatherEntry)
 

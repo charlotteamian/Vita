@@ -103,6 +103,7 @@ object LongTermTrendAnalyzer {
             trackedDays = trackedDates.size,
             changes = emptyList(),
             headline = "已经有 ${trackedDates.size} 天记录，但还没看出稳定的长期变化。",
+            synthesis = null,
         )
 
         val lead = changes.first()
@@ -112,7 +113,68 @@ object LongTermTrendAnalyzer {
             trackedDays = trackedDates.size,
             changes = changes,
             headline = "这些年变化最明显的是${lead.label}：${lead.earlyValueText} → ${lead.recentValueText}。",
+            synthesis = synthesis(changes),
         )
+    }
+
+    /** 跨指标互证: 两项长期变化方向一致时, 把它们连起来说成一件事。 */
+    private fun synthesis(changes: List<LongTermMetricChange>): String? {
+        fun deltaOf(label: String): Double? = changes.firstOrNull { it.label == label }?.delta
+        val sleep = deltaOf("睡眠时长")
+        val rhr = deltaOf("静息心率")
+        val steps = deltaOf("日均步数")
+        val weight = deltaOf("体重")
+        val stress = deltaOf("压力")
+        return when {
+            sleep != null && rhr != null && sleep < 0 && rhr > 0 ->
+                "睡眠变短和静息心率抬高互相印证：恢复的输入在变少、身体的基础负荷在变高。这是最值得优先扭转的组合——先把睡眠时间补回来，静息心率通常会跟着回落。"
+            steps != null && rhr != null && steps > 0 && rhr < 0 ->
+                "动得更多、静息心率更低，两者互相印证：这几年心肺在实打实地变强，保持现在的节奏就好。"
+            steps != null && weight != null && steps < 0 && weight > 0 ->
+                "活动量下降和体重上升同向出现，大概率是同一个生活方式变化的两面；把日常移动找回来，比单独控制饮食更容易同时改善两者。"
+            sleep != null && stress != null && sleep < 0 && stress > 0 ->
+                "睡眠变短和压力升高常常互为因果，容易形成循环；先固定上床时间，是打破这个循环阻力最小的一步。"
+            else -> null
+        }
+    }
+
+    /** 该项长期变化对生活意味着什么 + 一个可执行的方向 (按指标和方向定制)。 */
+    private fun meaningFor(label: String, delta: Double): String = when (label) {
+        "静息心率" -> if (delta < 0) {
+            "静息心率长期下降，通常说明心肺效率和恢复能力在变好——同样的日常负荷，心脏更省力。"
+        } else {
+            "静息心率长期抬高值得留意：常见原因是活动量下降、长期压力、睡眠变差或体重上升。对照同期的步数和睡眠变化，通常能找到原因。"
+        }
+        "睡眠时长" -> {
+            val perYearHours = (abs(delta) * 365 / 60).roundToInt()
+            if (delta < 0) {
+                "平均每晚少睡 ${formatSleepMinutes(abs(delta))}，一年累计少了约 $perYearHours 小时恢复时间。长期睡眠缩水最先体现在白天精力和恢复速度上，是这几项里最值得优先改回去的。"
+            } else {
+                "平均每晚多睡 ${formatSleepMinutes(abs(delta))}，一年累计多出约 $perYearHours 小时恢复时间——这是对精力最实在的长期投资。"
+            }
+        }
+        "日均步数" -> if (delta < 0) {
+            "日常移动量下降通常不是某个决定造成的，而是通勤、工作方式或习惯变化的副产品。回看变化最大的那一年发生了什么；把日常移动找回来，往往比新开一项训练更容易。"
+        } else {
+            "日常移动量在增加。比起刻意训练，这种嵌在生活里的活动最容易坚持，对长期健康的复利也最大。"
+        }
+        "日均活动时长" -> if (delta < 0) {
+            "每天的活跃时间在变少，身体长期处在更久坐的状态。不必一步到位，先把每天的活跃时间往回找 10–15 分钟就有意义。"
+        } else {
+            "每天的活跃时间在增加，久坐被有效打散，这对代谢和精力都是正向积累。"
+        }
+        "压力" -> if (delta > 0) {
+            "全天压力水平逐年上升，意味着身体长期更紧绷、恢复窗口被压缩。看看变化最大的那一段对应了什么生活变化——解决来源比放松技巧更有效。"
+        } else {
+            "全天压力水平在下降，说明这几年的生活节奏对身体更友好了。"
+        }
+        "体重" -> "体重的缓慢漂移最容易被忽略——每年只变一点，几年累计就很可观。按自己的目标判断方向是否符合预期；不符合时，优先调整日常活动量和饮食结构，而不是短期冲刺。"
+        "身体电量" -> if (delta < 0) {
+            "每日精力储备的峰值在下降，多与睡眠质量和长期负荷有关；对照同期睡眠变化，通常能解释它。"
+        } else {
+            "每日精力储备的峰值在上升，说明恢复系统这几年运转良好。"
+        }
+        else -> ""
     }
 
     private fun MutableList<LongTermMetricChange>.addMetric(
@@ -167,6 +229,7 @@ object LongTermTrendAnalyzer {
                         }
                     }
                 },
+                meaningText = meaningFor(label, delta),
                 sampleDays = samples.size,
                 earlyYear = early.year,
                 recentYear = recent.year,
@@ -212,6 +275,8 @@ data class LongTermTrendReport(
     val trackedDays: Int,
     val changes: List<LongTermMetricChange>,
     val headline: String,
+    /** 跨指标互证: 两项变化方向一致时连起来给出的整体解读 (可空)。 */
+    val synthesis: String?,
 )
 
 data class LongTermMetricChange(
@@ -221,6 +286,8 @@ data class LongTermMetricChange(
     val deltaText: String,
     val note: String,
     val analysisText: String,
+    /** 这项长期变化对生活意味着什么 + 可执行方向。 */
+    val meaningText: String,
     val sampleDays: Int,
     val earlyYear: Int,
     val recentYear: Int,

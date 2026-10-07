@@ -67,6 +67,83 @@ val MIGRATION_10_11 = object : Migration(10, 11) {
     }
 }
 
+/**
+ * 情绪从「每天一条 (PK=date)」改成「时刻制 (PK=id, 一天可多条)」。
+ * 旧的每日记录各转成一条时刻: id=旧 date (唯一), recordedAtEpochMs=原 updatedAtEpochMs。
+ */
+val MIGRATION_11_12 = object : Migration(11, 12) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `mood_entry_new` (
+                `id` TEXT NOT NULL,
+                `date` TEXT NOT NULL,
+                `recordedAtEpochMs` INTEGER NOT NULL,
+                `moodId` TEXT NOT NULL,
+                `note` TEXT NOT NULL DEFAULT '',
+                `updatedAtEpochMs` INTEGER NOT NULL,
+                PRIMARY KEY(`id`)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            INSERT INTO `mood_entry_new` (`id`, `date`, `recordedAtEpochMs`, `moodId`, `note`, `updatedAtEpochMs`)
+            SELECT `date`, `date`, `updatedAtEpochMs`, `moodId`, `note`, `updatedAtEpochMs` FROM `mood_entry`
+            """.trimIndent()
+        )
+        db.execSQL("DROP TABLE `mood_entry`")
+        db.execSQL("ALTER TABLE `mood_entry_new` RENAME TO `mood_entry`")
+    }
+}
+
+/** 天气加自动获取相关列 (来源/气温/WMO code); 已有行默认 source='manual'。 */
+val MIGRATION_12_13 = object : Migration(12, 13) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        addColumnIfMissing(db, "weather_entry", "source", "TEXT NOT NULL DEFAULT 'manual'")
+        addColumnIfMissing(db, "weather_entry", "tempMaxC", "REAL")
+        addColumnIfMissing(db, "weather_entry", "tempMinC", "REAL")
+        addColumnIfMissing(db, "weather_entry", "weatherCode", "INTEGER")
+    }
+}
+
+/** 自定义情绪表。 */
+val MIGRATION_13_14 = object : Migration(13, 14) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `custom_mood` (
+                `id` TEXT NOT NULL,
+                `label` TEXT NOT NULL,
+                `colorHex` INTEGER NOT NULL,
+                `shape` TEXT NOT NULL,
+                `valence` INTEGER NOT NULL,
+                `isArchived` INTEGER NOT NULL DEFAULT 0,
+                `createdAtEpochMs` INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(`id`)
+            )
+            """.trimIndent()
+        )
+    }
+}
+
+/** 睡眠手动修正 (跨时区旅行手表按出发地时区记录等): 编辑/删除标记 + 原始时间窗, 用于挡外部同步覆盖。 */
+val MIGRATION_14_15 = object : Migration(14, 15) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        addColumnIfMissing(db, "sleep_session", "isEdited", "INTEGER NOT NULL DEFAULT 0")
+        addColumnIfMissing(db, "sleep_session", "isDeleted", "INTEGER NOT NULL DEFAULT 0")
+        addColumnIfMissing(db, "sleep_session", "originalStartEpochMs", "INTEGER")
+        addColumnIfMissing(db, "sleep_session", "originalEndEpochMs", "INTEGER")
+    }
+}
+
+/** 情绪时刻加「当时天气」列 (一天天气多变, 随情绪记); 可空。 */
+val MIGRATION_15_16 = object : Migration(15, 16) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        addColumnIfMissing(db, "mood_entry", "weatherId", "TEXT")
+    }
+}
+
 private fun addDailyInsightColumns(db: SupportSQLiteDatabase) {
     addColumnIfMissing(db, "daily_health", "avgStress", "INTEGER")
     addColumnIfMissing(db, "daily_health", "maxStress", "INTEGER")

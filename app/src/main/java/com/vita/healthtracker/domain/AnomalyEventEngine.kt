@@ -45,7 +45,7 @@ object AnomalyEventEngine {
             respiratorySignal(daily, date)?.let(::add)
             sleepDebt(sleeps, date)?.let(::add)
             activityDrop(daily, date)?.let(::add)
-            moodStreak(moods, date)?.let(::add)
+            moodStreak(moods, date, zone)?.let(::add)
             explicitHabitMisses(habits, habitCheckIns, date)?.let(::add)
             habitCompletionDrop(habits, habitCheckIns, date)?.let(::add)
         }
@@ -203,18 +203,26 @@ object AnomalyEventEngine {
         )
     }
 
-    private fun moodStreak(moods: List<MoodEntry>, date: LocalDate): AnomalyEvent? {
-        val moodByDate = moods.associateBy { it.date }
-        val recent = (0L..2L).mapNotNull { offset -> moodByDate[date.minusDays(offset).toString()] }
-        if (recent.size < 2 || recent.any { it.moodId !in NEGATIVE_MOODS }) return null
-        val labels = recent.mapNotNull { MoodCatalog.byId(it.moodId)?.label }.distinct()
+    private fun moodStreak(moods: List<MoodEntry>, date: LocalDate, zone: ZoneId): AnomalyEvent? {
+        // 一天可能多条时刻: 用「当天所有时刻的平均价」判断这一天整体是否偏低,
+        // 不再只看主导/最后一条——大半天都正向、只末尾一条负向时, 不该算这天情绪低。
+        val daily = MoodAggregator.daily(moods, zone)
+        val recent = (0L..2L).mapNotNull { offset ->
+            val day = date.minusDays(offset)
+            daily[day]?.let { day to it }
+        }
+        if (recent.size < 2 || recent.any { it.second.avgValence > LOW_MOOD_VALENCE }) return null
+        val labels = recent.mapNotNull { MoodCatalog.byId(it.second.dominantMoodId)?.label }.distinct()
         return AnomalyEvent(
             id = "mood_streak",
             severity = AnomalySeverity.WATCH,
             category = AnomalyCategory.LIFESTYLE,
-            title = "最近记录的情绪连续偏低",
-            summary = "连续 ${recent.size} 天记录为${labels.joinToString("、")}。",
-            evidence = recent.sortedBy { it.date }.map { "${it.date} · ${MoodCatalog.byId(it.moodId)?.label ?: it.moodId}" },
+            title = "最近几天情绪整体偏低",
+            summary = "连续 ${recent.size} 天整体情绪偏低，多为${labels.joinToString("、")}。",
+            evidence = recent.sortedBy { it.first }.map { (day, d) ->
+                val label = MoodCatalog.byId(d.dominantMoodId)?.label ?: d.dominantMoodId
+                if (d.count > 1) "$day · $label · 当天记 ${d.count} 次" else "$day · $label"
+            },
             guidance = "可以回看睡眠、压力和近期安排是否一起变化；如果低落持续或影响生活，考虑和可信任的人聊聊，必要时寻求专业帮助。",
             priority = 78,
         )
@@ -324,10 +332,12 @@ object AnomalyEventEngine {
 
     private fun String.withSpace(): String = if (isBlank()) "" else " $this"
 
-    private val NEGATIVE_MOODS = setOf("tired", "stressed", "down", "irritated")
     private const val BASELINE_DAYS = 28
     private const val MIN_BASELINE_SAMPLES = 7
     private const val MAX_EVENTS = 4
+
+    /** 当天平均情绪「价」≤ 此值 (1..5 制, 2=疲惫/压力档) 才算这一天整体偏低。 */
+    private const val LOW_MOOD_VALENCE = 2.0
 }
 
 enum class AnomalySeverity(val rank: Int, val label: String) {

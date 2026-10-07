@@ -16,6 +16,7 @@ import com.vita.healthtracker.ui.screens.settings.SettingsViewModel
 import com.vita.healthtracker.ui.screens.today.BodyBatteryDetailViewModel
 import com.vita.healthtracker.ui.screens.stats.StatsViewModel
 import com.vita.healthtracker.ui.screens.today.TodayViewModel
+import com.vita.healthtracker.ui.screens.trends.TrendsViewModel
 
 /** 极简手摇 ViewModel 工厂,避免引入 Hilt. */
 class VitaViewModelFactory(private val container: AppContainer) : ViewModelProvider.Factory {
@@ -29,6 +30,7 @@ class VitaViewModelFactory(private val container: AppContainer) : ViewModelProvi
                 container.habitRepository,
                 container.moodRepository,
                 container.cycleRepository,
+                container.aiInsightManager,
             ) as T
         modelClass.isAssignableFrom(BodyBatteryDetailViewModel::class.java) ->
             BodyBatteryDetailViewModel(container.healthRepository) as T
@@ -38,10 +40,11 @@ class VitaViewModelFactory(private val container: AppContainer) : ViewModelProvi
             StatsViewModel(
                 container.healthRepository,
                 container.settingsPreferences,
-                container.habitRepository,
-                container.moodRepository,
-                container.cycleRepository,
-                container.weatherRepository,
+            ) as T
+        modelClass.isAssignableFrom(TrendsViewModel::class.java) ->
+            TrendsViewModel(
+                container.aiInsightManager,
+                container.settingsPreferences,
             ) as T
         modelClass.isAssignableFrom(LifeViewModel::class.java) ->
             LifeViewModel(
@@ -54,6 +57,8 @@ class VitaViewModelFactory(private val container: AppContainer) : ViewModelProvi
             ) as T
         modelClass.isAssignableFrom(com.vita.healthtracker.ui.screens.life.SleepDetailViewModel::class.java) ->
             com.vita.healthtracker.ui.screens.life.SleepDetailViewModel(container.healthRepository) as T
+        modelClass.isAssignableFrom(com.vita.healthtracker.ui.screens.life.SleepDayDetailViewModel::class.java) ->
+            com.vita.healthtracker.ui.screens.life.SleepDayDetailViewModel(container.healthRepository) as T
         modelClass.isAssignableFrom(com.vita.healthtracker.ui.screens.exercise.ExerciseDetailViewModel::class.java) ->
             com.vita.healthtracker.ui.screens.exercise.ExerciseDetailViewModel(
                 container.database.exerciseDao(),
@@ -68,6 +73,10 @@ class VitaViewModelFactory(private val container: AppContainer) : ViewModelProvi
                 container.backupManager,
                 container.settingsPreferences,
                 container.stepSensorManager,
+                container.weatherSyncManager,
+                container.reminderScheduler,
+                container.directApiInsightProvider,
+                container.appUpdateManager,
             ) as T
         modelClass.isAssignableFrom(AccountAuthViewModel::class.java) ->
             AccountAuthViewModel(

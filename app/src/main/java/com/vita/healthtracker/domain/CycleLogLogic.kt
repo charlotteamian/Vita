@@ -14,6 +14,7 @@ data class CyclePeriod(
 enum class CycleRecordType {
     PERIOD,
     SPOTTING,
+    SYMPTOMS,
 }
 
 data class CycleCountdownText(
@@ -58,6 +59,13 @@ object CycleLogLogic {
                 notes = NOTE_INTERMENSTRUAL_BLEEDING,
                 symptomsCsv = symptomsCsv,
             )
+
+            CycleRecordType.SYMPTOMS -> CycleEntry(
+                date = date.toString(),
+                flow = 0,
+                isPeriodStart = false,
+                symptomsCsv = symptomsCsv,
+            )
         }
     }
 
@@ -79,7 +87,8 @@ object CycleLogLogic {
         for (i in 1 until sorted.size) {
             val (date, entry) = sorted[i]
             val prevDate = sorted[i - 1].first
-            if (date.toEpochDay() - prevDate.toEpochDay() <= 1) {
+            // 容忍漏记 1 天: 中间隔一天没记仍算同一段经期, 隔两天以上才视作新一段。
+            if (date.toEpochDay() - prevDate.toEpochDay() <= 2) {
                 groupEntries.add(entry)
             } else {
                 periods.add(buildPeriod(groupStart, groupEntries))
@@ -93,6 +102,10 @@ object CycleLogLogic {
 
     fun spottingEntries(entries: List<CycleEntry>): List<CycleEntry> =
         entries.filter { it.flow > 0 && hasIntermenstrualBleedingNote(it) }
+            .sortedByDescending { it.date }
+
+    fun symptomOnlyEntries(entries: List<CycleEntry>): List<CycleEntry> =
+        entries.filter { it.flow <= 0 && !it.symptomsCsv.isNullOrBlank() }
             .sortedByDescending { it.date }
 
     fun symptomOptions(entries: List<CycleEntry>): List<String> {
@@ -130,7 +143,8 @@ object CycleLogLogic {
         return CyclePeriod(
             startDate = startDate,
             endDate = endDate,
-            days = entries.size,
+            // 按日历跨度计天数, 中间漏记一天也不影响经期长度。
+            days = (endDate.toEpochDay() - startDate.toEpochDay() + 1).toInt(),
             avgFlow = if (entries.isNotEmpty()) entries.map { it.flow }.average().toInt() else 0,
             entries = entries,
         )

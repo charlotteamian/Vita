@@ -189,3 +189,17 @@ Vita/
 5. **数据回填到 Fortuna?** 如果未来想把"健康消费"(健身房月卡 / 运动装备) 自动关联,可考虑跨 app share Intent
 
 ## Imported Claude Cowork project instructions
+
+## 当前 GitHub 发布约定（2026-10-07）
+
+以下为当前发布身份与数据保护约定，涉及发布和数据库状态时以本节及当前代码为准：
+
+- 公开仓库为 `https://github.com/charlotteamian/Vita`。源码和测试可以公开；个人健康数据、备份、账号凭据、AI Key 与签名私钥永不提交。
+- 正式更新使用 `personal` 构建类型：包名固定 `com.vita.healthtracker.debug`、`isDebuggable=false`，沿用原 Mac 签名，证书 SHA-256 固定 `71b7801a44bd4ee9227e4c0e97e40c5b4b9432db68622a18c0aa58e65c7bb048`。不得改变包名、证书或建议卸载旧应用。
+- 版本集中在根目录 `version.properties`；发布新版必须同时增加 `versionCode` 与 `versionName`，且 code 高于最新 Release。公开分发身份集中在 `distribution.properties`，不可为通过校验而更换指纹。
+- `.github/workflows/android-ci.yml` 的 `Android CI` 执行 debug 单测/Lint/编译，不发布普通 debug APK。`.github/workflows/android-release.yml` 的 `Publish Android update` 支持手动运行或推送匹配版本的 `v版本` 标签；执行 personal 单测/Lint/编译和 `scripts/verify_apk.py` 检查，生成 APK、`release-manifest.json`、`SHA256SUMS`，拒绝重复标签及版本倒退。
+- 签名只从四个 GitHub Actions Secrets 读取：`VITA_SIGNING_KEYSTORE_B64`、`VITA_SIGNING_STORE_PASSWORD`、`VITA_SIGNING_KEY_ALIAS`、`VITA_SIGNING_KEY_PASSWORD`。本地默认使用既有 `~/.android/debug.keystore`，换电脑必须恢复原密钥；可用 `VITA_SIGNING_KEYSTORE_PATH` 指定文件。签名备份放在仓库外。
+- 首版从 Releases 手动覆盖安装，后续通过设置页 GitHub 检查更新，下载校验后交由系统安装。更新前可导出 JSON 健康备份，但备份不包含凭据与设置。
+- Room 当前版本为 16，无破坏性迁移兜底。每次数据库变更必须增加版本并补迁移；历史 v4 schema 缺失，真机未连接时不得宣称全历史迁移、覆盖安装和数据保留均已验证。
+- 常规数据保存在手机本地；用户请求 AI 分析时会发送摘要与情绪备注到所选模型服务。文档不得把可选 AI 分析描述为完全不上云。本次 GitHub 发布工作保持 Garmin SSO/cookie/OAuth/登录流程冻结。
+- 网页修改、发布、签名恢复与验证边界见 `docs/releases.md`。

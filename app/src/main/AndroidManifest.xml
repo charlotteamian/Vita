@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 用户在设置页下载 GitHub 更新后,交由系统确认覆盖安装。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Health Connect 读权限 -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
@@ -30,8 +32,13 @@
     <uses-permission android:name="android.permission.health.READ_MENSTRUATION" />
     <uses-permission android:name="android.permission.health.WRITE_MENSTRUATION" />
 
-    <!-- 通知 (将来做提醒) -->
+    <!-- 通知 (记录提醒) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 重启后重建提醒闹钟 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 天气自动获取: 大致位置 (用户在设置里显式开启才请求) -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- 手机内置步数传感器 -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
@@ -58,6 +65,16 @@
         android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.Vita"
         tools:targetApi="34">
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_file_paths" />
+        </provider>
 
         <activity
             android:name=".MainActivity"
@@ -94,5 +111,23 @@
             android:name=".data.sync.GarminSyncForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".data.ai.AiInsightForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- 记录提醒: 到点弹通知 + 重启后重建闹钟 -->
+        <receiver
+            android:name=".data.reminder.MoodReminderReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".data.reminder.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

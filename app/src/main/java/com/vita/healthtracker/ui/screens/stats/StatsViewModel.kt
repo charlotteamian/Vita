@@ -2,25 +2,12 @@ package com.vita.healthtracker.ui.screens.stats
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
 import com.vita.healthtracker.data.local.entity.ExerciseSession
-import com.vita.healthtracker.data.local.entity.HabitCheckIn
-import com.vita.healthtracker.data.local.entity.HabitDefinition
-import com.vita.healthtracker.data.local.entity.MoodEntry
 import com.vita.healthtracker.data.local.entity.SleepSession
-import com.vita.healthtracker.data.local.entity.WeatherEntry
 import com.vita.healthtracker.data.prefs.SettingsPreferences
-import com.vita.healthtracker.data.repository.CycleRepository
-import com.vita.healthtracker.data.repository.HabitRepository
 import com.vita.healthtracker.data.repository.HealthRepository
-import com.vita.healthtracker.data.repository.MoodRepository
-import com.vita.healthtracker.data.repository.WeatherRepository
 import com.vita.healthtracker.domain.ExerciseClassifier
-import com.vita.healthtracker.domain.LocalAssociationAnalyzer
-import com.vita.healthtracker.domain.LocalAssociationReport
-import com.vita.healthtracker.domain.LongTermTrendAnalyzer
-import com.vita.healthtracker.domain.LongTermTrendReport
 import com.vita.healthtracker.ui.components.StatsRange
 import java.time.DayOfWeek
 import java.time.YearMonth
@@ -58,10 +45,6 @@ data class StatsUiState(
     val canGoNextPeriod: Boolean = false,
     /** 睡眠按当前图表槽位聚合后的摘要。年视图用它展示记录覆盖率和达标夜数。 */
     val sleepSummaries: List<StatsSleepSummary> = emptyList(),
-    /** 容忍断档的多年变化摘要: 按自然年聚合有记录日均值。 */
-    val longTermTrend: LongTermTrendReport? = null,
-    /** 完全在本机计算的跨维度关联库。 */
-    val localAssociations: LocalAssociationReport? = null,
 )
 
 data class StatsHistoryMonth(
@@ -152,10 +135,6 @@ data class StatsDayDetail(
 class StatsViewModel(
     private val repo: HealthRepository,
     private val prefs: SettingsPreferences,
-    private val habitRepo: HabitRepository,
-    private val moodRepo: MoodRepository,
-    private val cycleRepo: CycleRepository,
-    private val weatherRepo: WeatherRepository,
 ) : ViewModel() {
 
     private val _range = MutableStateFlow(StatsRange.Week)
@@ -221,34 +200,12 @@ class StatsViewModel(
             repo.exerciseRange(LocalDate.of(1900, 1, 1).atStartOfDay(zone).toInstant(), toInstant),
         ) { daily, sleeps, exercises -> ChartSource(daily, sleeps, exercises) }
 
-        val lifestyleFlow = combine(
-            habitRepo.observeActiveHabits(),
-            habitRepo.observeCheckIns(LocalDate.of(1900, 1, 1), today),
-            moodRepo.observeRange(LocalDate.of(1900, 1, 1), today),
-            cycleRepo.observeRange(LocalDate.of(1900, 1, 1), today),
-            weatherRepo.observeRange(LocalDate.of(1900, 1, 1), today),
-        ) { habits, checkIns, moods, cycles, weather ->
-            LifestyleSource(habits, checkIns, moods, cycles, weather)
-        }
-
-        combine(chartFlow, calendarFlow, historyFlow, lifestyleFlow) { chart, calendar, history, lifestyle ->
+        combine(chartFlow, calendarFlow, historyFlow) { chart, calendar, history ->
             val daily = chart.daily
             val sleeps = chart.sleeps
             val exercises = chart.exercises.filter { ExerciseClassifier.shouldShowInStats(it, zone) }
             val historyExercises = history.exercises.filter { ExerciseClassifier.shouldShowInStats(it, zone) }
             val historyMonths = buildHistoryMonths(history.daily, history.sleeps, historyExercises, zone)
-            val longTermTrend = LongTermTrendAnalyzer.analyze(history.daily, history.sleeps, zone)
-            val localAssociations = LocalAssociationAnalyzer.analyze(
-                daily = history.daily,
-                sleeps = history.sleeps,
-                exercises = historyExercises,
-                habits = lifestyle.habits,
-                habitCheckIns = lifestyle.checkIns,
-                moods = lifestyle.moods,
-                cycleEntries = lifestyle.cycles,
-                weather = lifestyle.weather,
-                zone = zone,
-            )
 
             // 「全部」视图不画图, 直接汇总整段历史返回 (不用走下面的网格/图表逻辑)。
             if (range == StatsRange.All) {
@@ -264,8 +221,6 @@ class StatsViewModel(
                     xLabels = emptyList(),
                     dayExtras = emptyList(),
                     allTimeSummary = buildAllTimeSummary(daily, sleeps, exercises, zone),
-                    longTermTrend = longTermTrend,
-                    localAssociations = localAssociations,
                 )
             }
 
@@ -387,8 +342,6 @@ class StatsViewModel(
                 periodLabel = periodLabel,
                 canGoNextPeriod = canGoNextPeriod,
                 sleepSummaries = sleepSummaries,
-                longTermTrend = longTermTrend,
-                localAssociations = localAssociations,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StatsUiState())
@@ -797,14 +750,6 @@ class StatsViewModel(
         val daily: List<DailyHealthSnapshot>,
         val sleeps: List<SleepSession>,
         val exercises: List<ExerciseSession>,
-    )
-
-    private data class LifestyleSource(
-        val habits: List<HabitDefinition>,
-        val checkIns: List<HabitCheckIn>,
-        val moods: List<MoodEntry>,
-        val cycles: List<CycleEntry>,
-        val weather: List<WeatherEntry>,
     )
 
     private fun buildHistoryMonths(

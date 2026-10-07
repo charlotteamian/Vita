@@ -53,10 +53,13 @@ object SessionDeduplicator {
         return clusters
     }
 
+    /** 两个时间窗是否是同一觉 (强重叠或首尾都在容差内); 手动修正记录挡外部重导入时复用同一判定。 */
+    fun isSameSleepWindow(aStart: Long, aEnd: Long, bStart: Long, bEnd: Long): Boolean =
+        hasStrongOverlap(aStart, aEnd, bStart, bEnd) ||
+            (abs(aStart - bStart) <= SleepToleranceMs && abs(aEnd - bEnd) <= SleepToleranceMs)
+
     private fun isSameSleep(a: SleepSession, b: SleepSession): Boolean =
-        hasStrongOverlap(a.startEpochMs, a.endEpochMs, b.startEpochMs, b.endEpochMs) ||
-            (abs(a.startEpochMs - b.startEpochMs) <= SleepToleranceMs &&
-                abs(a.endEpochMs - b.endEpochMs) <= SleepToleranceMs)
+        isSameSleepWindow(a.startEpochMs, a.endEpochMs, b.startEpochMs, b.endEpochMs)
 
     private fun isSameExercise(a: ExerciseSession, b: ExerciseSession): Boolean =
         hasStrongOverlap(a.startEpochMs, a.endEpochMs, b.startEpochMs, b.endEpochMs) ||

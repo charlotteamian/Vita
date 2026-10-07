@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.vita.aiserver</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/restartday/Documents/Vita/ai-server/vita_ai_server.py</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd 的 PATH 很短, 把 claude 可能在的位置都加上 -->
+        <key>PATH</key>
+        <string>/Users/restartday/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- 默认只监听 127.0.0.1。手机访问时再手动添加 VITA_AI_ALLOW_LAN=1 和 VITA_AI_TOKEN。 -->
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/vita-ai-server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/vita-ai-server.log</string>
+</dict>
+</plist>

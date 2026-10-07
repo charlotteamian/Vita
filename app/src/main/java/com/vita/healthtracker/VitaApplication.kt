@@ -20,6 +20,8 @@ class VitaApplication : Application() {
         super.onCreate()
         container = DefaultAppContainer(this)
         enqueuePeriodicSync()
+        // 天气自动获取 (内部自检开关+定位权限, 未开启则无操作)。
+        container.weatherSyncManager.refreshIfEnabled()
     }
 
     private fun enqueuePeriodicSync() {

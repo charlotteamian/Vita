@@ -64,6 +64,41 @@ class CycleLogLogicTest {
     }
 
     @Test
+    fun `symptom only entries do not count as bleeding or period days`() {
+        val entry = CycleLogLogic.buildEntry(
+            date = LocalDate.parse("2026-06-08"),
+            recordType = CycleRecordType.SYMPTOMS,
+            flow = 4,
+            isStart = true,
+            symptoms = setOf("腹胀", "疲惫"),
+        )
+
+        assertEquals(0, entry.flow)
+        assertFalse(entry.isPeriodStart)
+        assertEquals("疲惫,腹胀", entry.symptomsCsv)
+        assertTrue(CycleLogLogic.groupIntoPeriods(listOf(entry)).isEmpty())
+        assertTrue(CycleLogLogic.spottingEntries(listOf(entry)).isEmpty())
+        assertEquals(listOf("2026-06-08"), CycleLogLogic.symptomOnlyEntries(listOf(entry)).map { it.date })
+    }
+
+    @Test
+    fun `symptom only entries with blank csv are excluded`() {
+        // After clearing symptoms from a symptom-only entry, it should not appear
+        // in any display list.
+        val entry = CycleEntry(
+            date = "2026-06-08",
+            flow = 0,
+            isPeriodStart = false,
+            symptomsCsv = null,
+            source = "manual",
+        )
+
+        assertTrue(CycleLogLogic.groupIntoPeriods(listOf(entry)).isEmpty())
+        assertTrue(CycleLogLogic.spottingEntries(listOf(entry)).isEmpty())
+        assertTrue(CycleLogLogic.symptomOnlyEntries(listOf(entry)).isEmpty())
+    }
+
+    @Test
     fun `menstrual day countdown does not show overdue text`() {
         val prediction = CyclePrediction(
             nextPeriodStart = LocalDate.parse("2026-06-02"),

@@ -1,6 +1,7 @@
 package com.vita.healthtracker.ui.screens.life
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,7 +41,10 @@ import java.time.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SleepDetailScreen(onBack: () -> Unit) {
+fun SleepDetailScreen(
+    onBack: () -> Unit,
+    onOpenDay: (java.time.LocalDate) -> Unit = {},
+) {
     val vm = vitaViewModel<SleepDetailViewModel>()
     val state by vm.state.collectAsStateWithLifecycle()
 
@@ -64,7 +68,7 @@ fun SleepDetailScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(state.sleeps) { sleep ->
-                DetailedSleepRow(sleep)
+                DetailedSleepRow(sleep, onOpenDay = onOpenDay)
             }
             if (state.sleeps.isEmpty()) {
                 item {
@@ -80,15 +84,24 @@ fun SleepDetailScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun DetailedSleepRow(sleep: SleepSession) {
+private fun DetailedSleepRow(
+    sleep: SleepSession,
+    onOpenDay: (java.time.LocalDate) -> Unit = {},
+) {
     val startDt = Instant.ofEpochMilli(sleep.startEpochMs).atZone(ZoneId.systemDefault())
     val endDt = Instant.ofEpochMilli(sleep.endEpochMs).atZone(ZoneId.systemDefault())
-    val dateStr = startDt.format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
-    val weekStr = startDt.format(DateTimeFormatter.ofPattern("EEEE"))
-    val timeStr = "${startDt.format(DateTimeFormatter.ofPattern("HH:mm"))} - ${endDt.format(DateTimeFormatter.ofPattern("HH:mm"))}"
+    // 跨夜睡眠归属醒来那天 (和统计/评分一个口径): 6日晚睡到7日早算 7 日的觉,
+    // 不再和 6 日的小睡一起挤在 6 日名下。
+    val displayDt = if (sleep.endEpochMs > sleep.startEpochMs) endDt else startDt
+    val dateStr = displayDt.format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
+    val weekStr = displayDt.format(DateTimeFormatter.ofPattern("EEEE"))
+    val timeStr = "${startDt.format(DateTimeFormatter.ofPattern("HH:mm"))} - ${endDt.format(DateTimeFormatter.ofPattern("HH:mm"))}" +
+        if (sleep.isEdited) " · 已修正" else ""
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpenDay(displayDt.toLocalDate()) },
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = MaterialTheme.shapes.medium,
     ) {

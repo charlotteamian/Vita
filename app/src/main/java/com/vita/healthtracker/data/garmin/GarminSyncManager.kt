@@ -235,11 +235,14 @@ class GarminSyncManager(
                 val cycle = dataFetcher.fetchMenstrualData(current)
                 if (cycle != null && cycle.isPeriodDay) {
                     dayHasGarminSignal = true
-                    cycleRepo.upsert(
-                        CycleEntry(
-                            date = current.toString(),
-                            flow = cycle.flow.coerceAtLeast(1),
-                            isPeriodStart = false // We'd need to determine this based on previous day, simplified here
+                    cycleRepo.upsertExternalPreservingManual(
+                        listOf(
+                            CycleEntry(
+                                date = current.toString(),
+                                flow = cycle.flow.coerceAtLeast(1),
+                                isPeriodStart = false, // We'd need to determine this based on previous day, simplified here
+                                source = "garmin_api",
+                            )
                         )
                     )
                     savedCycle++

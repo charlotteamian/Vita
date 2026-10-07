@@ -38,6 +38,7 @@ import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material.icons.outlined.MonitorWeight
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Stairs
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Straighten
@@ -107,9 +108,10 @@ private data class HomeCard(
 fun TodayScreen(navController: NavController) {
     val vm = vitaViewModel<TodayViewModel>()
     val state by vm.state.collectAsStateWithLifecycle()
+    val aiTodayStatus by vm.aiTodayStatus.collectAsStateWithLifecycle()
+    val aiTodayInsight by vm.aiTodayInsight.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var showExercisePicker by remember { mutableStateOf(false) }
-    var showAllTodayData by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.syncMessage) {
         state.syncMessage?.let {
@@ -137,12 +139,17 @@ fun TodayScreen(navController: NavController) {
                     maxLines = 1,
                     modifier = Modifier.align(Alignment.Center),
                 )
-                IconButton(
-                    onClick = vm::nextDay,
-                    enabled = state.date.isBefore(LocalDate.now()),
-                    modifier = Modifier.align(Alignment.CenterEnd),
-                ) {
-                    Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "后一天")
+                Row(modifier = Modifier.align(Alignment.CenterEnd)) {
+                    IconButton(
+                        onClick = vm::nextDay,
+                        enabled = state.date.isBefore(LocalDate.now()),
+                    ) {
+                        Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "后一天")
+                    }
+                    // 设置不再占底部 tab, 从这里进。
+                    IconButton(onClick = { navController.navigate("settings") }) {
+                        Icon(Icons.Outlined.Settings, contentDescription = "设置")
+                    }
                 }
             }
 
@@ -232,8 +239,23 @@ fun TodayScreen(navController: NavController) {
             HomeCard(HomeMetric.SPO2, daily?.avgSpo2?.toString() ?: "—", "%", Icons.Outlined.Bloodtype, VitaHeart),
             HomeCard(HomeMetric.RESPIRATION, daily?.avgRespiration?.let { String.format("%.1f", it) } ?: "—", "次/分", Icons.Outlined.Air, VitaPrimary),
             HomeCard(HomeMetric.WEIGHT, daily?.weightKg?.let { String.format("%.1f", it) } ?: "—", "kg", Icons.Outlined.MonitorWeight, VitaPrimary),
-            HomeCard(HomeMetric.SLEEP, state.lastSleep?.totalMinutes?.let { "${it / 60}h ${it % 60}m" } ?: "—", null, Icons.Outlined.Bedtime, VitaTertiary),
-            HomeCard(HomeMetric.SLEEP_SCORE, state.lastSleep?.sleepScore?.toString() ?: "—", "分", Icons.Outlined.Bedtime, VitaTertiary),
+            // 睡眠卡可点进当晚详情 (整晚深浅分期图)。
+            HomeCard(
+                HomeMetric.SLEEP,
+                state.lastSleep?.totalMinutes?.let { "${it / 60}h ${it % 60}m" } ?: "—",
+                null,
+                Icons.Outlined.Bedtime,
+                VitaTertiary,
+                onClick = state.lastSleep?.let { { navController.navigate("sleep_day/${state.date}") } },
+            ),
+            HomeCard(
+                HomeMetric.SLEEP_SCORE,
+                state.lastSleep?.sleepScore?.toString() ?: "—",
+                "分",
+                Icons.Outlined.Bedtime,
+                VitaTertiary,
+                onClick = state.lastSleep?.let { { navController.navigate("sleep_day/${state.date}") } },
+            ),
             HomeCard(
                 HomeMetric.EXERCISE,
                 state.exercises.takeIf { it.isNotEmpty() }?.let { "${it.size} 次" } ?: "—",
@@ -260,12 +282,24 @@ fun TodayScreen(navController: NavController) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.weight(1f),
         ) {
-            // ─── 当日简报: 默认只讲结论、行动和三个关键理由 ───
+            // ─── 当日简报: 分数环/维度条常驻; 叙述性洞察在今天已有 AI 解读时让位给 AI 卡 ───
+            val aiFreshToday = state.isToday && aiTodayInsight
+                ?.let { aiInsightDate(it) == java.time.LocalDate.now() } == true
             state.readiness?.let { readiness ->
                 state.dailyBrief?.let { brief ->
                     item(key = "status_score") {
-                        StatusScoreCard(score = readiness, brief = brief)
+                        StatusScoreCard(score = readiness, brief = brief, aiTakeover = aiFreshToday)
                     }
+                }
+            }
+            // ─── AI 今日解读: 结合昨晚睡眠 + 近 3-7 天短期趋势 (只在看「今天」时显示) ───
+            if (state.isToday) {
+                item(key = "ai_today") {
+                    AiTodayCard(
+                        insight = aiTodayInsight,
+                        status = aiTodayStatus,
+                        onAnalyze = vm::requestAiToday,
+                    )
                 }
             }
             if (state.anomalyEvents.isNotEmpty()) {
@@ -273,44 +307,17 @@ fun TodayScreen(navController: NavController) {
                     AnomalyEventsCard(events = state.anomalyEvents)
                 }
             }
-            state.dailyBrief?.let { brief ->
-                item(key = "life_trajectory") {
-                    LifeTrajectoryCard(brief = brief)
-                }
-            }
 
-            // 没有可评分数据时直接展示明细; 有简报时让首页保持简洁, 明细一键展开。
-            if (state.readiness != null) {
-                item(key = "today_data_toggle") {
-                    TextButton(
-                        onClick = { showAllTodayData = !showAllTodayData },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            text = if (showAllTodayData) "收起全部今日数据" else "查看全部今日数据 (${cards.size})",
-                            color = VitaPrimary,
-                        )
-                    }
-                }
-            }
-
-            if (state.readiness == null || showAllTodayData) {
-                itemsIndexed(cards, key = { _, item -> item.metric.key }) { _, card ->
-                    MetricCard(
-                        title = card.metric.label,
-                        value = card.value,
-                        unit = card.unit,
-                        icon = card.icon,
-                        accent = card.accent,
-                        onClick = card.onClick,
-                    )
-                }
-                // 月度 / 年度趋势保留在明细层。简报里的「Vita 发现」只摘出最值得注意的一条。
-                if (state.readiness != null) {
-                    item(key = "body_trend") {
-                        BodyTrendCard(monthTrend = state.monthTrend, yearTrend = state.yearTrend)
-                    }
-                }
+            // 数据卡片常驻直接滚动可见, 不再折叠 (显示哪些项由设置里的开关决定)。
+            itemsIndexed(cards, key = { _, item -> item.metric.key }) { _, card ->
+                MetricCard(
+                    title = card.metric.label,
+                    value = card.value,
+                    unit = card.unit,
+                    icon = card.icon,
+                    accent = card.accent,
+                    onClick = card.onClick,
+                )
             }
 
             // ─── 运动记录: 当天每条运动的丰富预览 (时长/距离/消耗/速度/心率) ───

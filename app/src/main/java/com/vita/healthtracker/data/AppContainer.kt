@@ -14,19 +14,33 @@ import com.vita.healthtracker.data.local.MIGRATION_7_8
 import com.vita.healthtracker.data.local.MIGRATION_8_9
 import com.vita.healthtracker.data.local.MIGRATION_9_10
 import com.vita.healthtracker.data.local.MIGRATION_10_11
+import com.vita.healthtracker.data.local.MIGRATION_11_12
+import com.vita.healthtracker.data.local.MIGRATION_12_13
+import com.vita.healthtracker.data.local.MIGRATION_13_14
+import com.vita.healthtracker.data.local.MIGRATION_14_15
+import com.vita.healthtracker.data.local.MIGRATION_15_16
 import com.vita.healthtracker.data.local.VitaDatabase
+import com.vita.healthtracker.data.location.LocationProvider
 import com.vita.healthtracker.data.prefs.SettingsPreferences
+import com.vita.healthtracker.data.reminder.ReminderScheduler
 import com.vita.healthtracker.data.repository.CycleRepository
 import com.vita.healthtracker.data.repository.HabitRepository
 import com.vita.healthtracker.data.repository.HealthRepository
 import com.vita.healthtracker.data.repository.MoodRepository
 import com.vita.healthtracker.data.repository.WeatherRepository
 import com.vita.healthtracker.data.sensor.StepSensorManager
+import com.vita.healthtracker.data.weather.OpenMeteoClient
+import com.vita.healthtracker.data.weather.WeatherSyncManager
+import com.vita.healthtracker.data.ai.AiInsightManager
+import com.vita.healthtracker.data.ai.DirectApiInsightProvider
+import com.vita.healthtracker.data.ai.LanBridgeInsightProvider
+import com.vita.healthtracker.data.ai.ModeRoutingInsightProvider
 import com.vita.healthtracker.data.apple.AppleHealthImporter
 import com.vita.healthtracker.data.garmin.GarminAuthClient
 import com.vita.healthtracker.data.garmin.GarminDataFetcher
 import com.vita.healthtracker.data.garmin.GarminSyncManager
 import com.vita.healthtracker.data.sync.SyncCoordinator
+import com.vita.healthtracker.data.update.AppUpdateManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,6 +61,11 @@ interface AppContainer {
     val garminDataFetcher: GarminDataFetcher
     val garminSyncManager: GarminSyncManager
     val syncCoordinator: SyncCoordinator
+    val aiInsightManager: AiInsightManager
+    val directApiInsightProvider: DirectApiInsightProvider
+    val weatherSyncManager: WeatherSyncManager
+    val reminderScheduler: ReminderScheduler
+    val appUpdateManager: AppUpdateManager
 }
 
 class DefaultAppContainer(context: Context) : AppContainer {
@@ -68,6 +87,11 @@ class DefaultAppContainer(context: Context) : AppContainer {
                 MIGRATION_8_9,
                 MIGRATION_9_10,
                 MIGRATION_10_11,
+                MIGRATION_11_12,
+                MIGRATION_12_13,
+                MIGRATION_13_14,
+                MIGRATION_14_15,
+                MIGRATION_15_16,
             )
             .build()
     }
@@ -98,7 +122,7 @@ class DefaultAppContainer(context: Context) : AppContainer {
     }
 
     override val moodRepository: MoodRepository by lazy {
-        MoodRepository(database.moodDao())
+        MoodRepository(database.moodDao(), database.customMoodDao(), appScope)
     }
 
     override val weatherRepository: WeatherRepository by lazy {
@@ -133,6 +157,27 @@ class DefaultAppContainer(context: Context) : AppContainer {
         GarminSyncManager(garminAuthClient, garminDataFetcher, healthRepository, cycleRepository)
     }
 
+    override val directApiInsightProvider: DirectApiInsightProvider by lazy {
+        DirectApiInsightProvider(settingsPreferences)
+    }
+
+    override val aiInsightManager: AiInsightManager by lazy {
+        AiInsightManager(
+            context = appContext,
+            scope = appScope,
+            prefs = settingsPreferences,
+            provider = ModeRoutingInsightProvider(
+                prefs = settingsPreferences,
+                lan = LanBridgeInsightProvider(settingsPreferences),
+                api = directApiInsightProvider,
+            ),
+            healthRepo = healthRepository,
+            habitRepo = habitRepository,
+            moodRepo = moodRepository,
+            cycleRepo = cycleRepository,
+        )
+    }
+
     override val syncCoordinator: SyncCoordinator by lazy {
         SyncCoordinator(
             context = appContext,
@@ -142,5 +187,23 @@ class DefaultAppContainer(context: Context) : AppContainer {
             garminAuthClient = garminAuthClient,
             garminSyncManager = garminSyncManager,
         )
+    }
+
+    override val weatherSyncManager: WeatherSyncManager by lazy {
+        WeatherSyncManager(
+            scope = appScope,
+            locationProvider = LocationProvider(appContext),
+            client = OpenMeteoClient(),
+            weatherRepo = weatherRepository,
+            prefs = settingsPreferences,
+        )
+    }
+
+    override val reminderScheduler: ReminderScheduler by lazy {
+        ReminderScheduler(appContext, settingsPreferences)
+    }
+
+    override val appUpdateManager: AppUpdateManager by lazy {
+        AppUpdateManager(appContext, appScope)
     }
 }

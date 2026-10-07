@@ -1,6 +1,8 @@
 package com.vita.healthtracker.ui.screens.life
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,7 +70,7 @@ import com.vita.healthtracker.R
 import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.HabitCheckIn
 import com.vita.healthtracker.data.local.entity.HabitDefinition
-import com.vita.healthtracker.data.local.entity.MoodEntry
+import com.vita.healthtracker.domain.MoodDaily
 import com.vita.healthtracker.data.local.entity.SleepSession
 import com.vita.healthtracker.domain.CycleLogLogic
 import com.vita.healthtracker.domain.CyclePeriod
@@ -108,9 +110,12 @@ fun LifeScreen(navController: NavController) {
     var newHabitName by rememberSaveable { mutableStateOf("") }
     var expandedPeriods by rememberSaveable { mutableStateOf(false) }
     var cycleExpanded by rememberSaveable { mutableStateOf(false) }
+    // 正在编辑的经期锚点 (取该段原起始日); 状态流刷新后按 ±2 天容差重新匹配, 段被删光时自动关闭。
+    var editingPeriodAnchor by remember { mutableStateOf<LocalDate?>(null) }
     var badgeCheckArmed by rememberSaveable { mutableStateOf(false) }
     var pendingCelebrationToken by remember { mutableStateOf<String?>(null) }
     var celebrationBadge by remember { mutableStateOf<HabitBadge?>(null) }
+    val canLogCycle = cycleRecordType != CycleRecordType.SYMPTOMS || selectedCycleSymptoms.isNotEmpty()
     val datePickerState = androidx.compose.material3.rememberDateRangePickerState()
 
     LaunchedEffect(state.earnedBadgeTokens, state.shownBadgeTokens, badgeCheckArmed) {
@@ -137,16 +142,8 @@ fun LifeScreen(navController: NavController) {
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item {
-            LifeOverviewCard(
-                state = state,
-                onMoodClick = { navController.navigate("mood_journal") },
-                onHabitClick = { navController.navigate("habit_detail") },
-                onSleepClick = { navController.navigate("sleep_detail") },
-            )
-        }
-
-        // 记录页先服务每天真正会做的动作: 打卡。
+        // 记录页只放需要动手记的东西, 按每天会做的动作排序: 打卡 → 情绪 → 生理期。
+        // (生活概览与睡眠数据已移除——概览与今日页重复, 睡眠明细归数据页。)
         item {
             HabitTodaySection(
                 habits = state.habits,
@@ -160,12 +157,11 @@ fun LifeScreen(navController: NavController) {
             )
         }
 
+        // 成就是习惯的奖励层, 收成一行入口, 不再占一整张卡。
         item {
-            HabitBadgeSummaryCard(
-                habitEarnedCount = state.earnedBadgeIds.size,
-                habitTotal = HabitBadgeCatalog.badges.size,
-                fitnessEarnedCount = state.fitnessEarnedIds.size,
-                fitnessTotal = HabitBadgeCatalog.fitnessBadges.size,
+            AchievementEntryRow(
+                earnedCount = state.earnedBadgeIds.size + state.fitnessEarnedIds.size,
+                totalCount = HabitBadgeCatalog.badges.size + HabitBadgeCatalog.fitnessBadges.size,
                 longestStreakDays = state.habitLongestStreakDays,
                 onClick = { navController.navigate("habit_badges") },
             )
@@ -173,57 +169,9 @@ fun LifeScreen(navController: NavController) {
 
         item {
             MoodSummaryCard(
-                moods = state.moods,
+                moodDaily = state.moodDaily,
                 onClick = { navController.navigate("mood_journal") },
             )
-        }
-
-        // ---- 睡眠板块 ----
-        item {
-            Text(
-                "近期睡眠",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(bottom = 4.dp),
-            )
-        }
-        
-        if (state.recentSleeps.isEmpty()) {
-            item {
-                Text(
-                    "暂无近期睡眠记录",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-        } else {
-            item {
-                val avgMins = state.recentSleeps.map { it.totalMinutes }.average().toLong()
-                Card(
-                    modifier = Modifier.fillMaxWidth().clickable { navController.navigate("sleep_detail") },
-                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-                    shape = MaterialTheme.shapes.medium,
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(VitaGradients.cardSurface, MaterialTheme.shapes.medium)
-                            .padding(20.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Outlined.Bedtime, contentDescription = null, tint = VitaTertiary, modifier = Modifier.size(36.dp))
-                        Column(modifier = Modifier.weight(1f).padding(start = 16.dp)) {
-                            Text("近期平均睡眠", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                text = "${avgMins / 60}h ${avgMins % 60}m",
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = VitaTertiary
-                            )
-                        }
-                        Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
         }
 
         item {
@@ -270,6 +218,25 @@ fun LifeScreen(navController: NavController) {
                 },
                 onDeletePeriod = { period -> vm.deleteCyclePeriod(period) },
                 onDeleteCycle = { date -> vm.deleteCycle(date) },
+                onEditPeriod = { period -> editingPeriodAnchor = period.startDate },
+            )
+        }
+    }
+
+    editingPeriodAnchor?.let { anchor ->
+        val editingPeriod = state.cyclePeriods.firstOrNull { p ->
+            !anchor.isBefore(p.startDate.minusDays(2)) && !anchor.isAfter(p.endDate.plusDays(2))
+        }
+        if (editingPeriod == null) {
+            editingPeriodAnchor = null
+        } else {
+            PeriodEditorSheet(
+                period = editingPeriod,
+                symptomOptions = state.symptomOptions,
+                onSetFlow = vm::setDayFlow,
+                onSetSymptoms = vm::setDaySymptoms,
+                onSetStart = { date -> vm.setPeriodStartDay(editingPeriod, date) },
+                onDismiss = { editingPeriodAnchor = null },
             )
         }
     }
@@ -330,23 +297,26 @@ fun LifeScreen(navController: NavController) {
         androidx.compose.material3.DatePickerDialog(
             onDismissRequest = { showDatePicker = false },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    showDatePicker = false
-                    val startMillis = datePickerState.selectedStartDateMillis
-                    val endMillis = datePickerState.selectedEndDateMillis ?: startMillis
-                    if (startMillis != null && endMillis != null) {
-                        val startDate = Instant.ofEpochMilli(startMillis).atZone(ZoneId.of("UTC")).toLocalDate()
-                        val endDate = Instant.ofEpochMilli(endMillis).atZone(ZoneId.of("UTC")).toLocalDate()
-                        vm.logCycleRange(
-                            startDate = startDate,
-                            endDate = endDate,
-                            flow = flow,
-                            isStart = markStart,
-                            recordType = cycleRecordType,
-                            symptoms = selectedCycleSymptoms.toSet(),
-                        )
-                    }
-                }) { Text("确定") }
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        showDatePicker = false
+                        val startMillis = datePickerState.selectedStartDateMillis
+                        val endMillis = datePickerState.selectedEndDateMillis ?: startMillis
+                        if (startMillis != null && endMillis != null) {
+                            val startDate = Instant.ofEpochMilli(startMillis).atZone(ZoneId.of("UTC")).toLocalDate()
+                            val endDate = Instant.ofEpochMilli(endMillis).atZone(ZoneId.of("UTC")).toLocalDate()
+                            vm.logCycleRange(
+                                startDate = startDate,
+                                endDate = endDate,
+                                flow = flow,
+                                isStart = markStart,
+                                recordType = cycleRecordType,
+                                symptoms = selectedCycleSymptoms.toSet(),
+                            )
+                        }
+                    },
+                    enabled = canLogCycle,
+                ) { Text("确定") }
             },
             dismissButton = {
                 androidx.compose.material3.TextButton(onClick = { showDatePicker = false }) { Text("取消") }
@@ -362,141 +332,42 @@ fun LifeScreen(navController: NavController) {
     }
 }
 
+/** 成就入口: 一行带数字的轻量入口, 点击进徽章页。 */
 @Composable
-private fun LifeOverviewCard(
-    state: LifeUiState,
-    onMoodClick: () -> Unit,
-    onHabitClick: () -> Unit,
-    onSleepClick: () -> Unit,
-) {
-    val today = remember { LocalDate.now() }
-    val todayMood = MoodCatalog.byId(state.moods[today.toString()]?.moodId)
-    val todayDone = state.habits.count { habit ->
-        state.habitCheckIns.any {
-            it.habitId == habit.id &&
-                it.date == today.toString() &&
-                it.status == HabitCheckIn.StatusDone
-        }
-    }
-    val latestSleep = state.recentSleeps.maxByOrNull { it.endEpochMs }
-    val week = remember(today) { (6 downTo 0).map { today.minusDays(it.toLong()) } }
-    val moodLogged = week.count { state.moods.containsKey(it.toString()) }
-    val sleepAverage = state.recentSleeps
-        .take(7)
-        .takeIf { it.isNotEmpty() }
-        ?.map { it.totalMinutes }
-        ?.average()
-        ?.toLong()
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(VitaGradients.primaryAccent, MaterialTheme.shapes.large)
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "生活概览",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = lifeOverviewSentence(todayMood?.label, todayDone, state.habits.size, latestSleep),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = VitaOnSurfaceMuted,
-                        modifier = Modifier.padding(top = 3.dp),
-                    )
-                }
-                MoodGlyph(mood = todayMood, size = 44.dp, filled = todayMood != null)
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                LifeSignalPill(
-                    label = "情绪",
-                    value = todayMood?.label ?: "未记",
-                    detail = if (moodLogged == 7) "近7天都记了" else "近7天记了 $moodLogged 天",
-                    color = todayMood?.let { Color(it.colorHex) } ?: VitaPrimary,
-                    onClick = onMoodClick,
-                    modifier = Modifier.weight(1f),
-                )
-                LifeSignalPill(
-                    label = "习惯",
-                    value = "$todayDone/${state.habits.size}",
-                    detail = "最长 ${state.habitLongestStreakDays} 天",
-                    color = VitaActive,
-                    onClick = onHabitClick,
-                    modifier = Modifier.weight(1f),
-                )
-                LifeSignalPill(
-                    label = "睡眠",
-                    value = latestSleep?.let { sleepTextShort(it.totalMinutes) } ?: "暂无",
-                    detail = sleepAverage?.let { "近7次平均 ${sleepTextShort(it)}" } ?: "近14天",
-                    color = VitaTertiary,
-                    onClick = onSleepClick,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun LifeSignalPill(
-    label: String,
-    value: String,
-    detail: String,
-    color: Color,
+private fun AchievementEntryRow(
+    earnedCount: Int,
+    totalCount: Int,
+    longestStreakDays: Int,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f))
+            .background(VitaGradients.cardSurface)
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 11.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = VitaOnSurfaceMuted, maxLines = 1)
-        Text(
-            value,
-            style = MaterialTheme.typography.titleSmall,
-            color = color,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Icon(
+            Icons.Outlined.EmojiEvents,
+            contentDescription = null,
+            tint = VitaActive,
+            modifier = Modifier.size(20.dp),
         )
-        Text(detail, style = MaterialTheme.typography.labelSmall, color = VitaOnSurfaceMuted, maxLines = 1)
+        Text(
+            text = "成就 $earnedCount/$totalCount · 最长连续 $longestStreakDays 天",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f).padding(start = 10.dp),
+        )
+        Icon(
+            Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+            contentDescription = "查看成就",
+            tint = VitaOnSurfaceMuted,
+        )
     }
 }
-
-private fun lifeOverviewSentence(
-    moodLabel: String?,
-    habitDone: Int,
-    habitTotal: Int,
-    sleep: SleepSession?,
-): String {
-    val mood = moodLabel?.let { "今天心情：$it" } ?: "今天还没记心情"
-    val habit = if (habitTotal > 0) "习惯完成 $habitDone/$habitTotal" else "还没设置习惯"
-    val sleepText = sleep?.let { "昨晚睡了 ${sleepTextLong(it.totalMinutes)}" } ?: "暂无睡眠记录"
-    return "$mood；$habit；$sleepText"
-}
-
-private fun sleepTextShort(minutes: Long): String = "${minutes / 60}h${minutes % 60}m"
-
-private fun sleepTextLong(minutes: Long): String = "${minutes / 60} 小时 ${minutes % 60} 分钟"
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CycleSection(
@@ -521,6 +392,7 @@ private fun CycleSection(
     onLogToday: () -> Unit,
     onDeletePeriod: (CyclePeriod) -> Unit,
     onDeleteCycle: (String) -> Unit,
+    onEditPeriod: (CyclePeriod) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
@@ -574,6 +446,11 @@ private fun CycleSection(
                             selected = recordType == CycleRecordType.SPOTTING,
                             onClick = { onRecordTypeChange(CycleRecordType.SPOTTING) },
                             label = { Text("点滴出血") },
+                        )
+                        FilterChip(
+                            selected = recordType == CycleRecordType.SYMPTOMS,
+                            onClick = { onRecordTypeChange(CycleRecordType.SYMPTOMS) },
+                            label = { Text("仅症状") },
                         )
                     }
                     if (recordType == CycleRecordType.PERIOD) {
@@ -642,12 +519,13 @@ private fun CycleSection(
                         Spacer(modifier = Modifier.weight(1f))
                         AssistChip(
                             onClick = onLogToday,
+                            enabled = recordType != CycleRecordType.SYMPTOMS || selectedSymptoms.isNotEmpty(),
                             label = {
                                 Text(
-                                    if (recordType == CycleRecordType.SPOTTING) {
-                                        "记录点滴"
-                                    } else {
-                                        stringResource(R.string.cycle_log_period)
+                                    when (recordType) {
+                                        CycleRecordType.SPOTTING -> "记录点滴"
+                                        CycleRecordType.SYMPTOMS -> "记录症状"
+                                        CycleRecordType.PERIOD -> stringResource(R.string.cycle_log_period)
                                     }
                                 )
                             },
@@ -658,52 +536,93 @@ private fun CycleSection(
                 }
             }
 
-            if (state.cyclePeriods.isNotEmpty()) {
+            // 经期段落、点滴出血和仅症状记录合并成一条按时间倒序的时间线。
+            val timeline = remember(state.cyclePeriods, state.spottingEntries, state.symptomOnlyEntries) {
+                buildList<CycleTimelineItem> {
+                    state.cyclePeriods.forEach { add(CycleTimelineItem.Period(it)) }
+                    state.spottingEntries.forEach { entry ->
+                        runCatching { LocalDate.parse(entry.date) }.getOrNull()?.let {
+                            add(CycleTimelineItem.Spotting(entry, it))
+                        }
+                    }
+                    state.symptomOnlyEntries.forEach { entry ->
+                        runCatching { LocalDate.parse(entry.date) }.getOrNull()?.let {
+                            add(CycleTimelineItem.Symptoms(entry, it))
+                        }
+                    }
+                }.sortedByDescending { it.sortDate }
+            }
+            if (timeline.isNotEmpty()) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "历史经期",
+                        "周期记录",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
-                    if (state.cyclePeriods.size > 3) {
+                    if (timeline.size > 4) {
                         TextButton(onClick = { onExpandedPeriodsChange(!expandedPeriods) }) {
                             Text(if (expandedPeriods) "收起" else "查看全部")
                         }
                     }
                 }
-                val displayPeriods = if (expandedPeriods) state.cyclePeriods else state.cyclePeriods.take(3)
-                displayPeriods
-                    .groupBy { it.startDate.year }
+                Text(
+                    text = "点经期可逐天修改经量、症状和起始日；无出血的症状会单独保留。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = VitaOnSurfaceMuted,
+                )
+                val displayItems = if (expandedPeriods) timeline else timeline.take(4)
+                displayItems
+                    .groupBy { it.sortDate.year }
                     .toList()
                     .sortedByDescending { it.first }
-                    .forEach { (year, periods) ->
+                    .forEach { (year, items) ->
                         Text(
                             text = "${year}年",
                             style = MaterialTheme.typography.labelLarge,
                             color = VitaOnSurfaceMuted,
                             modifier = Modifier.padding(top = 4.dp),
                         )
-                        periods.forEach { period ->
-                            CyclePeriodRow(period = period, onDelete = { onDeletePeriod(period) })
+                        items.forEach { item ->
+                            when (item) {
+                                is CycleTimelineItem.Period -> CyclePeriodRow(
+                                    period = item.period,
+                                    onClick = { onEditPeriod(item.period) },
+                                    onDelete = { onDeletePeriod(item.period) },
+                                )
+                                is CycleTimelineItem.Spotting -> CycleSpottingRow(
+                                    entry = item.entry,
+                                    onDelete = { onDeleteCycle(item.entry.date) },
+                                )
+                                is CycleTimelineItem.Symptoms -> CycleSymptomOnlyRow(
+                                    entry = item.entry,
+                                    onDelete = { onDeleteCycle(item.entry.date) },
+                                )
+                            }
                         }
-                }
-            }
-            if (state.spottingEntries.isNotEmpty()) {
-                Text(
-                    "近期点滴出血",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-                state.spottingEntries.take(5).forEach { entry ->
-                    CycleSpottingRow(entry = entry, onDelete = { onDeleteCycle(entry.date) })
-                }
+                    }
             }
         }
+    }
+}
+
+/** 周期时间线项: 经期段落、单日点滴出血或仅症状记录, 按日期混排。 */
+private sealed interface CycleTimelineItem {
+    val sortDate: LocalDate
+
+    data class Period(val period: CyclePeriod) : CycleTimelineItem {
+        override val sortDate: LocalDate get() = period.startDate
+    }
+
+    data class Spotting(val entry: CycleEntry, val date: LocalDate) : CycleTimelineItem {
+        override val sortDate: LocalDate get() = date
+    }
+
+    data class Symptoms(val entry: CycleEntry, val date: LocalDate) : CycleTimelineItem {
+        override val sortDate: LocalDate get() = date
     }
 }
 
@@ -1158,7 +1077,7 @@ private fun SleepRow(sleep: SleepSession) {
 }
 
 @Composable
-private fun CyclePeriodRow(period: CyclePeriod, onDelete: () -> Unit) {
+private fun CyclePeriodRow(period: CyclePeriod, onClick: () -> Unit, onDelete: () -> Unit) {
     val fmt = DateTimeFormatter.ofPattern("M月d日")
     val dateRange = if (period.days == 1) {
         period.startDate.format(fmt)
@@ -1177,6 +1096,7 @@ private fun CyclePeriodRow(period: CyclePeriod, onDelete: () -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(VitaGradients.cardSurface, MaterialTheme.shapes.small)
+                .clickable(onClick = onClick)
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1297,12 +1217,242 @@ private fun CycleSpottingRow(entry: CycleEntry, onDelete: () -> Unit) {
     }
 }
 
+@Composable
+private fun CycleSymptomOnlyRow(entry: CycleEntry, onDelete: () -> Unit) {
+    val fmt = DateTimeFormatter.ofPattern("M月d日")
+    val dateText = runCatching { LocalDate.parse(entry.date).format(fmt) }.getOrElse { entry.date }
+    val symptoms = CycleLogLogic.decodeSymptoms(entry.symptomsCsv)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(VitaGradients.cardSurface, MaterialTheme.shapes.small)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Outlined.Favorite, contentDescription = null, tint = VitaPrimary, modifier = Modifier.size(20.dp))
+            Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(dateText, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = if (symptoms.isEmpty()) "症状记录" else symptoms.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = VitaOnSurfaceMuted,
+                    modifier = Modifier.padding(top = 4.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Outlined.Delete, contentDescription = "删除")
+            }
+        }
+    }
+}
+
 private fun flowLabel(flow: Int): String = when (flow) {
     1 -> "点滴"
     2 -> "轻"
     3 -> "中"
     4 -> "重"
     else -> "—"
+}
+
+// ──── 经期逐日编辑器 ────────────────────────────────────────
+
+/**
+ * 经期编辑器: 列出该段经期前一天到后一天的每一天,
+ * 逐天改经量 (无=删除该天)、展开编辑当天症状、把任意一天设为起始日。
+ * 所有修改即点即存, 数据流刷新后列表自动跟上。
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun PeriodEditorSheet(
+    period: CyclePeriod,
+    symptomOptions: List<String>,
+    onSetFlow: (LocalDate, Int) -> Unit,
+    onSetSymptoms: (LocalDate, Set<String>) -> Unit,
+    onSetStart: (LocalDate) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val fmt = remember { DateTimeFormatter.ofPattern("M月d日") }
+    val today = LocalDate.now()
+    val entriesByDate = period.entries.associateBy { it.date }
+    // 前后各留一天空位, 方便把经期往前/往后扩一天; 不能编辑未来。
+    val days = remember(period.startDate, period.endDate) {
+        buildList {
+            var day = period.startDate.minusDays(1)
+            val end = minOf(period.endDate.plusDays(1), today)
+            while (!day.isAfter(end)) {
+                add(day)
+                day = day.plusDays(1)
+            }
+        }
+    }
+    val explicitStartDate = period.entries.firstOrNull { it.isPeriodStart }?.date
+    var symptomEditDate by remember { mutableStateOf<LocalDate?>(null) }
+
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF0E1320),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 20.dp, bottom = 32.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = "编辑经期 ${period.startDate.format(fmt)} — ${period.endDate.format(fmt)}",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "逐天点选经量（选「无」即删除该天）；点「症状」编辑当天症状；「起」标记预测用的起始日。",
+                style = MaterialTheme.typography.bodySmall,
+                color = VitaOnSurfaceMuted,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+            days.forEach { day ->
+                val entry = entriesByDate[day.toString()]
+                val isStart = if (explicitStartDate != null) {
+                    entry?.isPeriodStart == true
+                } else {
+                    day == period.startDate
+                }
+                val daySymptoms = CycleLogLogic.decodeSymptoms(entry?.symptomsCsv)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            if (entry != null) VitaSecondary.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.03f),
+                            RoundedCornerShape(12.dp),
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.width(72.dp)) {
+                            Text(
+                                text = day.format(fmt),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            if (isStart && entry != null) {
+                                Text(
+                                    text = "起始日",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = VitaSecondary,
+                                )
+                            }
+                        }
+                        FlowLevelSelector(
+                            current = entry?.flow ?: 0,
+                            onSelect = { level -> onSetFlow(day, level) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (entry != null) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (!isStart) {
+                                AssistChip(
+                                    onClick = { onSetStart(day) },
+                                    label = { Text("设为起始日", style = MaterialTheme.typography.labelSmall) },
+                                )
+                            }
+                            AssistChip(
+                                onClick = {
+                                    symptomEditDate = if (symptomEditDate == day) null else day
+                                },
+                                label = {
+                                    Text(
+                                        text = if (daySymptoms.isEmpty()) "症状" else "症状 (${daySymptoms.size})",
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                },
+                            )
+                            if (daySymptoms.isNotEmpty() && symptomEditDate != day) {
+                                Text(
+                                    text = daySymptoms.joinToString("·"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = VitaOnSurfaceMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                        if (symptomEditDate == day) {
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                (symptomOptions + daySymptoms).distinct().forEach { symptom ->
+                                    FilterChip(
+                                        selected = symptom in daySymptoms,
+                                        onClick = {
+                                            val updated = if (symptom in daySymptoms) {
+                                                daySymptoms.toSet() - symptom
+                                            } else {
+                                                daySymptoms.toSet() + symptom
+                                            }
+                                            onSetSymptoms(day, updated)
+                                        },
+                                        label = { Text(symptom, style = MaterialTheme.typography.labelSmall) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.End).padding(top = 4.dp),
+            ) { Text("完成") }
+        }
+    }
+}
+
+/** 经量五档选择: 无 / 点滴 / 轻 / 中 / 重。 */
+@Composable
+private fun FlowLevelSelector(
+    current: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        listOf(0 to "无", 1 to "滴", 2 to "轻", 3 to "中", 4 to "重").forEach { (level, label) ->
+            val selected = current == level
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (selected) VitaSecondary else Color.White.copy(alpha = 0.07f),
+                    )
+                    .clickable { onSelect(level) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) Color(0xFF06080F) else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 }
 
 // ──── 周期预测卡片 ────────────────────────────────────────
@@ -1496,13 +1646,15 @@ private fun BayesianPredictionCard(state: LifeUiState, modifier: Modifier = Modi
  */
 @Composable
 private fun MoodSummaryCard(
-    moods: Map<String, MoodEntry>,
+    moodDaily: Map<String, MoodDaily>,
     onClick: () -> Unit,
 ) {
     val today = remember { LocalDate.now() }
     val week = remember(today) { (6 downTo 0).map { today.minusDays(it.toLong()) } }
-    val todayMood = MoodCatalog.byId(moods[today.toString()]?.moodId)
-    val logged = week.count { moods.containsKey(it.toString()) }
+    val todayDaily = moodDaily[today.toString()]
+    val todayMood = MoodCatalog.byId(todayDaily?.dominantMoodId)
+    val todayCount = todayDaily?.count ?: 0
+    val logged = week.count { moodDaily.containsKey(it.toString()) }
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
@@ -1528,20 +1680,24 @@ private fun MoodSummaryCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = todayMood?.let { "今天 · ${it.label}" } ?: "记录今天的心情",
+                    text = when {
+                        todayMood == null -> "记录今天的心情"
+                        todayCount > 1 -> "今天 · ${todayMood.label} · 记了 $todayCount 次"
+                        else -> "今天 · ${todayMood.label}"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = todayMood?.let { Color(it.colorHex) } ?: VitaOnSurfaceMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "近 7 天已记录 $logged / 7",
+                    "近 7 天记了 $logged / 7 天",
                     style = MaterialTheme.typography.labelSmall,
                     color = VitaOnSurfaceMuted,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     week.forEach { d ->
-                        val m = MoodCatalog.byId(moods[d.toString()]?.moodId)
+                        val m = MoodCatalog.byId(moodDaily[d.toString()]?.dominantMoodId)
                         MoodGlyph(mood = m, size = 18.dp, filled = m != null)
                     }
                 }

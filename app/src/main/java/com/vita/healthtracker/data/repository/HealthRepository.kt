@@ -56,15 +56,90 @@ class HealthRepository(
 
     suspend fun saveSleepSessions(sessions: List<SleepSession>) {
         if (sessions.isEmpty()) return
-        val from = sessions.minOf { it.startEpochMs } - SLEEP_DUPLICATE_LOOKUP_PADDING_MS
-        val to = sessions.maxOf { it.endEpochMs } + SLEEP_DUPLICATE_LOOKUP_PADDING_MS
-        val candidates = (sleepDao.overlapping(from, to) + sessions)
+        // 手动修正/删除过的记录优先: 外部同步不得覆盖或复活它们。
+        // 按 id 和「修正前的原始时间窗」双重拦截——跨时区修正后, 佳明/HC 还会按原时间再发同一条。
+        val protected = sleepDao.protectedSessions()
+        val incoming = sessions.filter { s ->
+            protected.none { p ->
+                p.id == s.id || SessionDeduplicator.isSameSleepWindow(
+                    p.originalStartEpochMs ?: p.startEpochMs,
+                    p.originalEndEpochMs ?: p.endEpochMs,
+                    s.startEpochMs,
+                    s.endEpochMs,
+                )
+            }
+        }
+        if (incoming.isEmpty()) return
+        val from = incoming.minOf { it.startEpochMs } - SLEEP_DUPLICATE_LOOKUP_PADDING_MS
+        val to = incoming.maxOf { it.endEpochMs } + SLEEP_DUPLICATE_LOOKUP_PADDING_MS
+        val protectedIds = protected.map { it.id }.toSet()
+        // 修正过的记录不进合并池: 既不能被当成重复删掉, 也不能把外部数据合并进来。
+        val candidates = (sleepDao.overlapping(from, to).filterNot { it.id in protectedIds } + incoming)
             .associateBy { it.id }
             .values
             .toList()
         val merged = SessionDeduplicator.mergeSleepSessions(candidates)
         if (merged.duplicateIds.isNotEmpty()) sleepDao.deleteByIds(merged.duplicateIds.toList())
         sleepDao.upsertAll(merged.sessions)
+    }
+
+    /**
+     * 手动修正一条睡眠的时间 (典型场景: 跨时区旅行, 手表按出发地时区记录, 入睡时刻整段错位)。
+     * 首次修正记住原始时间窗; 之后同步会跳过同 id / 同原始时间窗的外部记录, 修正不被冲掉。
+     * 总时长按窗口增减同步调整 (纯平移则不变), 分期分钟保持原值。
+     */
+    suspend fun editSleepSession(id: String, newStartMs: Long, newEndMs: Long) {
+        if (newEndMs <= newStartMs) return
+        val current = sleepDao.byId(id) ?: return
+        val deltaMinutes = ((newEndMs - newStartMs) - (current.endEpochMs - current.startEpochMs)) / 60_000L
+        sleepDao.upsertAll(
+            listOf(
+                current.copy(
+                    startEpochMs = newStartMs,
+                    endEpochMs = newEndMs,
+                    totalMinutes = (current.totalMinutes + deltaMinutes).coerceAtLeast(1L),
+                    isEdited = true,
+                    isDeleted = false,
+                    originalStartEpochMs = current.originalStartEpochMs ?: current.startEpochMs,
+                    originalEndEpochMs = current.originalEndEpochMs ?: current.endEpochMs,
+                )
+            )
+        )
+    }
+
+    /** 撤销手动修正/删除, 回到原始时间; 之后外部同步恢复正常合并。 */
+    suspend fun restoreSleepSession(id: String) {
+        val current = sleepDao.byId(id) ?: return
+        val origStart = current.originalStartEpochMs ?: current.startEpochMs
+        val origEnd = current.originalEndEpochMs ?: current.endEpochMs
+        val deltaMinutes = ((origEnd - origStart) - (current.endEpochMs - current.startEpochMs)) / 60_000L
+        sleepDao.upsertAll(
+            listOf(
+                current.copy(
+                    startEpochMs = origStart,
+                    endEpochMs = origEnd,
+                    totalMinutes = (current.totalMinutes + deltaMinutes).coerceAtLeast(1L),
+                    isEdited = false,
+                    isDeleted = false,
+                    originalStartEpochMs = null,
+                    originalEndEpochMs = null,
+                )
+            )
+        )
+    }
+
+    /** 删除一条睡眠记录 (软删墓碑): 不再显示、不进统计, 重新同步也不会带回来。 */
+    suspend fun deleteSleepSession(id: String) {
+        val current = sleepDao.byId(id) ?: return
+        sleepDao.upsertAll(
+            listOf(
+                current.copy(
+                    isDeleted = true,
+                    originalStartEpochMs = current.originalStartEpochMs ?: current.startEpochMs,
+                    originalEndEpochMs = current.originalEndEpochMs ?: current.endEpochMs,
+                )
+            )
+        )
     }
 
     suspend fun forDate(date: LocalDate): DailyHealthSnapshot? =
@@ -98,7 +173,11 @@ class HealthRepository(
 
     fun sleepRange(from: Instant, to: Instant): Flow<List<SleepSession>> =
         sleepDao.rangeFlow(from.toEpochMilli(), to.toEpochMilli())
-            .map(SessionDeduplicator::dedupeSleepSessions)
+            .map { list ->
+                // 软删的不显示; 手动修正过的原样保留 (不参与展示层合并, 避免被外部记录的字段盖掉)。
+                val (edited, external) = list.filterNot { it.isDeleted }.partition { it.isEdited }
+                (SessionDeduplicator.dedupeSleepSessions(external) + edited).sortedBy { it.startEpochMs }
+            }
 
     fun heartRateRange(from: Instant, to: Instant): Flow<List<HeartRateSample>> =
         heartRateDao.rangeFlow(from.toEpochMilli(), to.toEpochMilli())

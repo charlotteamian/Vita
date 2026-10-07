@@ -1,5 +1,6 @@
 package com.vita.healthtracker.data.backup
 
+import com.vita.healthtracker.data.local.entity.CustomMood
 import com.vita.healthtracker.data.local.entity.CycleEntry
 import com.vita.healthtracker.data.local.entity.BodyBatterySample
 import com.vita.healthtracker.data.local.entity.DailyHealthSnapshot
@@ -27,6 +28,7 @@ data class BackupEnvelope(
     val garminRaw: List<GarminRawRecord> = emptyList(),
     val cycle: List<CycleEntry> = emptyList(),
     val moods: List<MoodEntry> = emptyList(),
+    val customMoods: List<CustomMood> = emptyList(),
     val habits: List<HabitDefinition> = emptyList(),
     val habitCheckIns: List<HabitCheckIn> = emptyList(),
     val weather: List<WeatherEntry> = emptyList(),

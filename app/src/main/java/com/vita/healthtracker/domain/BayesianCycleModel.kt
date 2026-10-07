@@ -2,6 +2,7 @@ package com.vita.healthtracker.domain
 
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -49,6 +50,10 @@ object BayesianCycleModel {
     private const val MAX_CYCLE_DAYS: Int = 60
     private const val OVERDUE_GRACE_DAYS: Long = 14
 
+    /** 参与推断的最近周期数上限与时间衰减: 越近的周期权重越高, 多年前的节奏不再主导预测。 */
+    private const val MAX_HISTORY_CYCLES: Int = 12
+    private const val RECENCY_DECAY: Double = 0.9
+
     // ──── 贝叶斯推断 ────────────────────────────────────────
 
     /**
@@ -56,10 +61,12 @@ object BayesianCycleModel {
      *
      * @param periodStarts 每段经期的起始日（按时间升序）
      * @param periodDurations 每段经期的持续天数（与 periodStarts 一一对应）
+     * @param today 评估基准日 (默认今天; 注入便于测试和跨午夜刷新)
      */
     fun predict(
         periodStarts: List<LocalDate>,
         periodDurations: List<Int>,
+        today: LocalDate = LocalDate.now(),
     ): CyclePrediction? {
         if (periodStarts.isEmpty()) return null
 
@@ -83,7 +90,6 @@ object BayesianCycleModel {
         val nextPeriodStart = lastStart.plusDays(predictedCycleDays.toLong())
 
         // 如果预测已明显过期，才向未来推进；当天到期或轻微延迟时不要直接跳到下个周期。
-        val today = LocalDate.now()
         var adjustedNext = nextPeriodStart
         val overdueCutoff = today.minusDays(OVERDUE_GRACE_DAYS)
         while (adjustedNext.isBefore(overdueCutoff)) {
@@ -139,9 +145,12 @@ object BayesianCycleModel {
     }
 
     /**
-     * 贝叶斯后验更新 (Normal-Normal conjugate)
+     * 贝叶斯后验更新 (Normal-Normal conjugate)，带时间衰减加权。
      *
      * 只接收已过滤的可信周期。过短/过长的间隔通常来自漏记或导入断层，不参与预测。
+     * 只取最近 [MAX_HISTORY_CYCLES] 个周期，并按 [RECENCY_DECAY] 指数加权——
+     * 作息/身体节奏变化后，几年前的旧周期不应与上个月的等权。
+     * 加权后用有效样本量 n_eff = (Σw)²/Σw² 代入共轭更新，全部等权时退化为原公式。
      */
     private fun updatePosterior(cycleLengths: List<Int>): PosteriorState {
         if (cycleLengths.isEmpty()) {
@@ -152,24 +161,35 @@ object BayesianCycleModel {
             )
         }
 
-        val observed = cycleLengths.map { it.toDouble() }
-        val observedMean = observed.average()
+        val observed = cycleLengths.takeLast(MAX_HISTORY_CYCLES).map { it.toDouble() }
+        val weights = DoubleArray(observed.size) { i ->
+            RECENCY_DECAY.pow((observed.size - 1 - i).toDouble())
+        }
+        val weightSum = weights.sum()
+        val weightSqSum = weights.sumOf { it * it }
+        val weightedMean = observed.indices.sumOf { weights[it] * observed[it] } / weightSum
 
-        // 观测方差 σ²，至少用默认值，避免一两条完全相同记录导致置信区间过窄。
-        val obsVar = if (cycleLengths.size >= 2) {
-            val ss = observed.sumOf { (it - observedMean).let { diff -> diff * diff } }
-            (ss / (observed.size - 1)).coerceAtLeast(DEFAULT_OBS_STD * DEFAULT_OBS_STD * 0.5)
+        // 加权样本方差 (可靠性权重的 Bessel 修正)，至少用默认观测噪声，
+        // 避免一两条完全相同记录导致置信区间过窄。
+        val obsVar = if (observed.size >= 2) {
+            val ss = observed.indices.sumOf { i ->
+                val diff = observed[i] - weightedMean
+                weights[i] * diff * diff
+            }
+            (ss / (weightSum - weightSqSum / weightSum))
+                .coerceAtLeast(DEFAULT_OBS_STD * DEFAULT_OBS_STD * 0.5)
         } else {
             DEFAULT_OBS_STD * DEFAULT_OBS_STD
         }
 
-        // Normal-Normal 后验更新
-        // τₙ² = 1 / (1/τ₀² + n/σ²)
-        val posteriorPrecision = 1.0 / PRIOR_VAR + observed.size / obsVar
+        val nEff = weightSum * weightSum / weightSqSum
+
+        // τₙ² = 1 / (1/τ₀² + n_eff/σ²)
+        val posteriorPrecision = 1.0 / PRIOR_VAR + nEff / obsVar
         val posteriorVar = 1.0 / posteriorPrecision
 
-        // μₙ = τₙ² × (μ₀/τ₀² + n × x̄/σ²)
-        val posteriorMean = posteriorVar * (PRIOR_MEAN / PRIOR_VAR + observed.size * observedMean / obsVar)
+        // μₙ = τₙ² × (μ₀/τ₀² + n_eff × x̄_w/σ²)
+        val posteriorMean = posteriorVar * (PRIOR_MEAN / PRIOR_VAR + nEff * weightedMean / obsVar)
 
         return PosteriorState(
             posteriorMean = posteriorMean,
@@ -193,8 +213,6 @@ object BayesianCycleModel {
         periodDays: Int = DEFAULT_PERIOD_DAYS,
     ): DayStatus {
         if (prediction == null || lastPeriodStart == null) return DayStatus.UNKNOWN
-
-        val today = LocalDate.now()
 
         // 正在经期中？
         val periodEnd = lastPeriodStart.plusDays((periodDays - 1).toLong())
