@@ -19,6 +19,7 @@ import tempfile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BUILD_TOOLS_VERSION = "35.0.0"
 SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}\Z")
 APPLICATION_ID_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+\Z")
 VERSION_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}\Z")
@@ -169,22 +170,17 @@ def validate_identity(identity: DistributionIdentity, metadata: ApkMetadata, cer
 
 def find_android_tools() -> AndroidTools:
     roots = [Path(value).expanduser() for key in ("ANDROID_HOME", "ANDROID_SDK_ROOT") if (value := os.environ.get(key))]
-    candidates: list[tuple[tuple[int, ...], Path, Path]] = []
     for root in roots:
-        build_tools = root / "build-tools"
-        if not build_tools.is_dir():
-            continue
-        for directory in build_tools.iterdir():
-            if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", directory.name):
-                continue
-            apksigner = directory / ("apksigner.bat" if os.name == "nt" else "apksigner")
-            aapt = directory / ("aapt.exe" if os.name == "nt" else "aapt")
-            if apksigner.is_file() and aapt.is_file():
-                candidates.append((tuple(map(int, directory.name.split("."))), apksigner, aapt))
-    if not candidates:
-        raise VerificationError("Set ANDROID_HOME or ANDROID_SDK_ROOT to an SDK containing stable build-tools with apksigner and aapt")
-    _, apksigner, aapt = max(candidates, key=lambda entry: entry[0])
-    return AndroidTools(apksigner, aapt)
+        # Match the SDK version installed by our workflows, rather than an unrelated
+        # newer SDK preinstalled on GitHub runners with a different CLI format.
+        directory = root / "build-tools" / BUILD_TOOLS_VERSION
+        apksigner = directory / ("apksigner.bat" if os.name == "nt" else "apksigner")
+        aapt = directory / ("aapt.exe" if os.name == "nt" else "aapt")
+        if apksigner.is_file() and aapt.is_file():
+            return AndroidTools(apksigner, aapt)
+    raise VerificationError(
+        f"Set ANDROID_HOME or ANDROID_SDK_ROOT to an SDK containing build-tools {BUILD_TOOLS_VERSION}"
+    )
 
 
 def run_tool(command: list[str]) -> str:
@@ -247,7 +243,9 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path, help="Directory for verified release assets")
     args = parser.parse_args()
     try:
-        manifest = prepare_release(args.apk.resolve(), args.output_dir.resolve(), load_identity(), find_android_tools())
+        android_tools = find_android_tools()
+        print(f"Verifying with Android build-tools {android_tools.apksigner.parent.name}")
+        manifest = prepare_release(args.apk.resolve(), args.output_dir.resolve(), load_identity(), android_tools)
     except (VerificationError, OSError) as exc:
         print(f"Release verification failed: {exc}", file=sys.stderr)
         return 1

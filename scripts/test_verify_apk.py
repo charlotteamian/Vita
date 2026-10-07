@@ -4,6 +4,7 @@
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -89,6 +90,25 @@ class SigningTests(unittest.TestCase):
         for digest in ("bad", CERTIFICATE[:-1], CERTIFICATE + "0", "g" * 64):
             with self.subTest(digest=digest), self.assertRaises(verify_apk.VerificationError):
                 verify_apk.parse_signing_certificate(SIGNATURE_OUTPUT.replace(CERTIFICATE, digest))
+
+
+class ToolSelectionTests(unittest.TestCase):
+    def test_uses_workflow_sdk_version_instead_of_newest_runner_sdk(self):
+        with tempfile.TemporaryDirectory() as temp:
+            sdk = Path(temp)
+            for version in ('35.0.0', '99.0.0'):
+                directory = sdk / 'build-tools' / version
+                directory.mkdir(parents=True)
+                for filename in ('apksigner', 'apksigner.bat', 'aapt', 'aapt.exe'):
+                    (directory / filename).touch()
+            with patch.dict(os.environ, {'ANDROID_HOME': str(sdk)}, clear=True):
+                self.assertEqual(verify_apk.find_android_tools().apksigner.parent.name, '35.0.0')
+
+    def test_missing_required_sdk_version_fails_without_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {'ANDROID_HOME': temp}, clear=True):
+                with self.assertRaises(verify_apk.VerificationError):
+                    verify_apk.find_android_tools()
 
 
 class MetadataTests(unittest.TestCase):
